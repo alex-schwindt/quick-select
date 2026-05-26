@@ -4,7 +4,7 @@
  */
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "asana-followup-dashboard",
+  "name": "quick-select",
   "main": "src/index.js",
   "compatibility_date": "2026-05-19",
   "vars": {
