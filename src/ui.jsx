@@ -194,7 +194,7 @@ export default function App() {
     <div className="app-shell">
       <header className="topbar">
         <div>
-          <p className="eyebrow">H&H Trecho</p>
+          <p className="eyebrow">H&amp;H Trecho</p>
           <h1>Quick Select</h1>
           <p className="intro-copy">Build multi-unit schedules, assign custom equipment tags, and export the real Excel template through a Cloudflare Worker.</p>
         </div>
@@ -266,28 +266,78 @@ export default function App() {
           {!scheduledUnits.length ? (
             <div className="empty-state">No units added yet. Build a unit on the left and add it to the schedule.</div>
           ) : (
-            <div className="unit-list">
-              {scheduledUnits.map((unit, index) => {
-                const options = optionSummary(unit).join(', ') || 'No options';
-                return (
-                  <article className="unit-card" key={`${unit.tag}-${index}`}>
-                    <div className="unit-card-top">
-                      <div><strong>{unit.tag}</strong><p>{unit.areaServed || 'Area served not entered'}</p></div>
-                      <span className="tag-pill">{unit.family}</span>
-                    </div>
-                    <div className="unit-meta-grid">
-                      <span>{unit.tonnage} Tons</span><span>{unit.efficiency}</span><span>{unit.voltage}</span><span>{unit.heatType === 'None' ? 'No heat' : `${unit.heatType} ${unit.heatCapacity}`}</span>
-                    </div>
-                    <p className="unit-options">{options}</p>
-                    <div className="unit-actions">
-                      <button className="secondary-btn" type="button" onClick={() => editUnit(index)}>Edit</button>
-                      <button className="secondary-btn" type="button" onClick={() => duplicateUnit(index)}>Duplicate</button>
-                      <button className="secondary-btn danger-btn" type="button" onClick={() => removeUnit(index)}>Remove</button>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
+            <>
+              <div className="schedule-preview-shell">
+                <div className="schedule-preview-scroll">
+                  <table className="schedule-preview-table">
+                    <thead>
+                      <tr className="schedule-preview-group-row">
+                        <th colSpan="4">Identification</th>
+                        <th colSpan="2">Selection</th>
+                        <th colSpan="1">Heating</th>
+                        <th colSpan="1">Electrical</th>
+                        <th colSpan="1">Options</th>
+                        <th colSpan="1">Remarks</th>
+                      </tr>
+                      <tr className="schedule-preview-column-row">
+                        <th>Tag</th>
+                        <th>Area Served</th>
+                        <th>Family</th>
+                        <th>Model Number</th>
+                        <th>Tons</th>
+                        <th>Efficiency</th>
+                        <th>Heat</th>
+                        <th>Volt/Ph</th>
+                        <th>Factory Options</th>
+                        <th>Remarks</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {scheduledUnits.map((unit, index) => {
+                        const options = optionSummary(unit).join(', ') || '—';
+                        return (
+                          <tr key={`${unit.tag}-${index}`}>
+                            <td className="schedule-cell-tag">{unit.tag}</td>
+                            <td>{unit.areaServed || '—'}</td>
+                            <td>{unit.family}</td>
+                            <td className="schedule-cell-code">{buildSelectionCode(unit)}</td>
+                            <td>{unit.tonnage}</td>
+                            <td>{unit.efficiency}</td>
+                            <td>{unit.heatType === 'None' ? 'No heat' : `${unit.heatType} ${unit.heatCapacity}`}</td>
+                            <td>{unit.voltage}</td>
+                            <td>{options}</td>
+                            <td>{unit.remarks?.trim() || '—'}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="unit-list schedule-actions-list">
+                {scheduledUnits.map((unit, index) => {
+                  const options = optionSummary(unit).join(', ') || 'No options';
+                  return (
+                    <article className="unit-card" key={`${unit.tag}-${index}`}>
+                      <div className="unit-card-top">
+                        <div><strong>{unit.tag}</strong><p>{unit.areaServed || 'Area served not entered'}</p></div>
+                        <span className="tag-pill">{unit.family}</span>
+                      </div>
+                      <div className="unit-meta-grid">
+                        <span>{unit.tonnage} Tons</span><span>{unit.efficiency}</span><span>{unit.voltage}</span><span>{unit.heatType === 'None' ? 'No heat' : `${unit.heatType} ${unit.heatCapacity}`}</span>
+                      </div>
+                      <p className="unit-options">{options}</p>
+                      <div className="unit-actions">
+                        <button className="secondary-btn" type="button" onClick={() => editUnit(index)}>Edit</button>
+                        <button className="secondary-btn" type="button" onClick={() => duplicateUnit(index)}>Duplicate</button>
+                        <button className="secondary-btn danger-btn" type="button" onClick={() => removeUnit(index)}>Remove</button>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            </>
           )}
         </section>
       </main>
