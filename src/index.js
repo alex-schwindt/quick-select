@@ -8,16 +8,57 @@ function normalizeText(value) {
   return String(value ?? '').trim();
 }
 
+function normalizeFamily(value) {
+  const v = normalizeText(value).toLowerCase();
+  if (['ac', 'gas pack', 'gaspack'].includes(v)) return 'ac';
+  if (['heat pump', 'heatpump', 'hp'].includes(v)) return 'hp';
+  return v.replace(/\s+/g, '-');
+}
+
+function normalizeEfficiency(value) {
+  const v = normalizeText(value).toLowerCase();
+  if (['standard', 'std'].includes(v)) return 'std';
+  if (['high', 'high efficiency', 'high-efficiency'].includes(v)) return 'high';
+  return v.replace(/\s+/g, '-');
+}
+
+function normalizeVoltage(value) {
+  const compact = normalizeText(value).toLowerCase().replace(/\s+/g, '').replace(/v/g, '');
+  if (['208/3', '208-3', '2083', '208/230/3', '2082303'].includes(compact.replace('/230', ''))) return '208-3';
+  if (['208/230/3', '2082303'].includes(compact)) return '208-3';
+  if (['460/3', '460-3', '4603'].includes(compact)) return '460-3';
+  return compact.replace(/\//g, '-');
+}
+
+function normalizeHeatType(value) {
+  const v = normalizeText(value).toLowerCase();
+  if (['aluminum gas heat', 'gas heat', 'gas'].includes(v)) return 'gas';
+  if (['electric heat', 'electric'].includes(v)) return 'electric';
+  if (['none', 'no heat', ''].includes(v)) return 'none';
+  return v.replace(/\s+/g, '-');
+}
+
+function normalizeHeatCapacity(value) {
+  const v = normalizeText(value).toLowerCase();
+  if (!v) return '0';
+  return v.replace(/\s+/g, '').replace('mbh', '').replace('.0', '');
+}
+
+function normalizeTonnage(value) {
+  return String(value ?? '').trim().replace('.0', '');
+}
+
 function buildSelectionCode(unit) {
-  const familyCode = unit.family === 'Heat Pump' ? 'HP' : 'AC';
-  const efficiencyCode = unit.efficiency === 'High' ? 'HI' : 'STD';
+  const familyCode = normalizeFamily(unit.family) === 'hp' ? 'HP' : 'AC';
+  const efficiencyCode = normalizeEfficiency(unit.efficiency) === 'high' ? 'HI' : 'STD';
   const tonnageCode = String(unit.tonnage).replace('.', 'P');
-  const voltageCode = unit.voltage === '460/3' ? '460' : '208';
-  const heatCode = unit.heatType === 'None'
+  const voltageCode = normalizeVoltage(unit.voltage) === '460-3' ? '460' : '208';
+  const heatTypeKey = normalizeHeatType(unit.heatType);
+  const heatCode = heatTypeKey === 'none'
     ? 'NOHEAT'
-    : unit.heatType === 'Electric Heat'
-      ? `ELEC-${String(unit.heatCapacity || '').replace(/\s+/g, '').replace(/[^0-9A-Za-z-]/g, '')}`
-      : `GAS-${String(unit.heatCapacity || '').replace(/\s+/g, '').replace(/[^0-9A-Za-z-]/g, '')}`;
+    : heatTypeKey === 'electric'
+      ? `ELEC-${normalizeHeatCapacity(unit.heatCapacity)}`
+      : `GAS-${normalizeHeatCapacity(unit.heatCapacity)}MBH`;
   const reheatCode = unit.hotGasReheat ? 'HGRH' : 'NOHGRH';
   const econCode = unit.economizer === 'barometric' ? 'ECO-BARO' : unit.economizer === 'powered' ? 'ECO-PE' : 'NOECO';
   return `${familyCode}-${efficiencyCode}-${tonnageCode}-${voltageCode}-${heatCode}-${reheatCode}-${econCode}`;
@@ -41,24 +82,32 @@ async function getTemplateWorkbook(env) {
 }
 
 async function listCatalog(env, filters) {
+  const familyKey = normalizeFamily(filters.family);
+  const efficiencyKey = normalizeEfficiency(filters.efficiency);
+  const tonnageKey = normalizeTonnage(filters.tonnage);
+  const voltageKey = normalizeVoltage(filters.voltage);
+  const heatTypeKey = normalizeHeatType(filters.heatType);
+  const heatCapacityKey = normalizeHeatCapacity(filters.heatCapacity);
+
   let sql = `
     SELECT m.id, m.family, m.efficiency, m.tonnage, m.voltage, m.heat_type, m.heat_capacity,
            m.model_code, m.model_number, m.unit_type, m.unit_eer, m.seer_ieer,
            m.cooling_cfm, m.cooling_total_capacity_mbh, m.cooling_sensible_capacity_mbh,
            m.heating_capacity_mbtu, m.refrigerant_type, m.refrigerant_charge,
            m.mca, m.mocp, m.filter_type, m.operating_weight_lbs,
+           m.family_key, m.efficiency_key, m.tonnage_key, m.voltage_key, m.heat_type_key, m.heat_capacity_key,
            d.cutsheet_url, d.accessories_url
     FROM unit_models m
     LEFT JOIN unit_documents d ON d.model_id = m.id
     WHERE 1 = 1
   `;
   const binds = [];
-  if (filters.family) { sql += ' AND m.family = ?'; binds.push(filters.family); }
-  if (filters.efficiency) { sql += ' AND m.efficiency = ?'; binds.push(filters.efficiency); }
-  if (filters.tonnage) { sql += ' AND m.tonnage = ?'; binds.push(Number(filters.tonnage)); }
-  if (filters.voltage) { sql += ' AND m.voltage = ?'; binds.push(filters.voltage); }
-  if (filters.heatType) { sql += ' AND m.heat_type = ?'; binds.push(filters.heatType); }
-  if (filters.heatCapacity) { sql += ' AND m.heat_capacity = ?'; binds.push(filters.heatCapacity); }
+  if (filters.family) { sql += ' AND m.family_key = ?'; binds.push(familyKey); }
+  if (filters.efficiency) { sql += ' AND m.efficiency_key = ?'; binds.push(efficiencyKey); }
+  if (filters.tonnage) { sql += ' AND m.tonnage_key = ?'; binds.push(tonnageKey); }
+  if (filters.voltage) { sql += ' AND m.voltage_key = ?'; binds.push(voltageKey); }
+  if (filters.heatType) { sql += ' AND m.heat_type_key = ?'; binds.push(heatTypeKey); }
+  if (filters.heatCapacity || heatTypeKey !== 'none') { sql += ' AND m.heat_capacity_key = ?'; binds.push(heatCapacityKey); }
   sql += ' ORDER BY m.family, m.tonnage, m.model_number';
   const stmt = env.DB.prepare(sql).bind(...binds);
   const result = await stmt.all();
@@ -102,8 +151,7 @@ async function createWorkbook(env, units) {
     row.getCell(10).value = match?.cooling_cfm || '';
     row.getCell(21).value = match?.cooling_sensible_capacity_mbh || '';
     row.getCell(22).value = match?.cooling_total_capacity_mbh || '';
-    row.getCell(23).value = unit.heatType === 'Electric Heat' ? (match?.cooling_cfm || '--') : '--';
-    row.getCell(26).value = unit.heatType === 'Aluminum Gas Heat' ? (match?.heating_capacity_mbtu || unit.heatCapacity || '--') : '--';
+    row.getCell(26).value = normalizeHeatType(unit.heatType) === 'gas' ? (match?.heating_capacity_mbtu || unit.heatCapacity || '--') : '--';
     row.getCell(37).value = match?.refrigerant_type || '';
     row.getCell(38).value = match?.refrigerant_charge || '';
     row.getCell(39).value = unit.voltage || '';
