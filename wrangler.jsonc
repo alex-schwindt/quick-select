@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "hhtrecho-quick-select",
+  "name": "quick-select",
   "main": "src/index.js",
   "compatibility_date": "2026-05-27",
   "observability": { "enabled": true },
@@ -10,8 +10,13 @@
     {
       "binding": "DB",
       "database_name": "hhtrecho-quick-select",
-      "database_id": "REPLACE_WITH_YOUR_DATABASE_ID"
+      "database_id": "89a464bb-b47d-45e4-81c8-8a73a53170db"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "TEMPLATES",
+      "bucket_name": "hhtrecho-templates"
     }
   ]
 }
-
