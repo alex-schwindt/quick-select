@@ -1,5 +1,4 @@
 import ExcelJS from 'exceljs';
-import templateUrl from '../template/SSR-Schedule-Example.xlsx';
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
@@ -30,6 +29,15 @@ function optionSummary(unit) {
     unit.economizer === 'barometric' ? 'Economizer w/ Barometric Relief' : null,
     unit.economizer === 'powered' ? 'Economizer w/ Powered Exhaust' : null
   ].filter(Boolean).join(', ');
+}
+
+async function getTemplateWorkbook(env) {
+  const object = await env.TEMPLATES.get('SSR-Schedule-Example.xlsx');
+  if (!object) throw new Error('Template workbook not found in R2 bucket.');
+  const arrayBuffer = await object.arrayBuffer();
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(arrayBuffer);
+  return workbook;
 }
 
 async function listCatalog(env, filters) {
@@ -70,10 +78,7 @@ async function findMatchingModel(env, unit) {
 }
 
 async function createWorkbook(env, units) {
-  const response = await fetch(templateUrl);
-  const arrayBuffer = await response.arrayBuffer();
-  const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.load(arrayBuffer);
+  const workbook = await getTemplateWorkbook(env);
   const worksheet = workbook.getWorksheet('Table 1') || workbook.worksheets[0];
   const templateRowNumber = 4;
   const baseRow = worksheet.getRow(templateRowNumber);
