@@ -8,6 +8,10 @@ function normalizeText(value) {
   return String(value ?? '').trim();
 }
 
+function asBlank(value) {
+  return value === null || value === undefined || value === '' ? '' : value;
+}
+
 function normalizeFamily(value) {
   const v = normalizeText(value).toLowerCase();
   if (['ac', 'gas pack', 'gaspack'].includes(v)) return 'ac';
@@ -64,8 +68,8 @@ function buildSelectionCode(unit) {
   return `${familyCode}-${efficiencyCode}-${tonnageCode}-${voltageCode}-${heatCode}-${reheatCode}-${econCode}`;
 }
 
-function optionSummary(unit) {
-  return [
+function optionSummary(unit, match) {
+  return normalizeText(unit.remarks) || normalizeText(match?.remarks_default) || [
     unit.hotGasReheat ? 'Hot Gas Reheat' : null,
     unit.economizer === 'barometric' ? 'Economizer w/ Barometric Relief' : null,
     unit.economizer === 'powered' ? 'Economizer w/ Powered Exhaust' : null
@@ -90,13 +94,7 @@ async function listCatalog(env, filters) {
   const heatCapacityKey = normalizeHeatCapacity(filters.heatCapacity);
 
   let sql = `
-    SELECT m.id, m.family, m.efficiency, m.tonnage, m.voltage, m.heat_type, m.heat_capacity,
-           m.model_code, m.model_number, m.unit_type, m.unit_eer, m.seer_ieer,
-           m.cooling_cfm, m.cooling_total_capacity_mbh, m.cooling_sensible_capacity_mbh,
-           m.heating_capacity_mbtu, m.refrigerant_type, m.refrigerant_charge,
-           m.mca, m.mocp, m.filter_type, m.operating_weight_lbs,
-           m.family_key, m.efficiency_key, m.tonnage_key, m.voltage_key, m.heat_type_key, m.heat_capacity_key,
-           d.cutsheet_url, d.accessories_url
+    SELECT m.*, d.cutsheet_url, d.accessories_url
     FROM unit_models m
     LEFT JOIN unit_documents d ON d.model_id = m.id
     WHERE 1 = 1
@@ -141,25 +139,42 @@ async function createWorkbook(env, units) {
 
     row.height = baseRow.height;
     row.getCell(2).value = normalizeText(unit.tag);
-    row.getCell(3).value = normalizeText(unit.areaServed);
-    row.getCell(4).value = 'H&H Trecho';
-    row.getCell(5).value = match?.model_number || buildSelectionCode(unit);
-    row.getCell(6).value = Number(unit.tonnage) || '';
-    row.getCell(7).value = match?.unit_type || unit.family;
-    row.getCell(8).value = match?.unit_eer || '';
-    row.getCell(9).value = match?.seer_ieer || unit.efficiency;
-    row.getCell(10).value = match?.cooling_cfm || '';
-    row.getCell(21).value = match?.cooling_sensible_capacity_mbh || '';
-    row.getCell(22).value = match?.cooling_total_capacity_mbh || '';
-    row.getCell(26).value = normalizeHeatType(unit.heatType) === 'gas' ? (match?.heating_capacity_mbtu || unit.heatCapacity || '--') : '--';
-    row.getCell(37).value = match?.refrigerant_type || '';
-    row.getCell(38).value = match?.refrigerant_charge || '';
-    row.getCell(39).value = unit.voltage || '';
-    row.getCell(40).value = match?.mca || '';
-    row.getCell(41).value = match?.mocp || '';
-    row.getCell(42).value = match?.filter_type || '';
-    row.getCell(43).value = match?.operating_weight_lbs || '';
-    row.getCell(44).value = normalizeText(unit.remarks) || optionSummary(unit) || '';
+    row.getCell(3).value = asBlank(unit.areaServed);
+    row.getCell(4).value = asBlank(match?.brand || 'H&H Trecho');
+    row.getCell(5).value = asBlank(match?.model_number || buildSelectionCode(unit));
+    row.getCell(6).value = asBlank(match?.tonnage || unit.tonnage);
+    row.getCell(7).value = asBlank(match?.unit_type || unit.family);
+    row.getCell(8).value = asBlank(match?.unit_eer);
+    row.getCell(9).value = asBlank(match?.seer_ieer);
+    row.getCell(10).value = asBlank(match?.supply_airflow_cfm || match?.cooling_cfm);
+    row.getCell(11).value = asBlank(match?.outside_air_min_cfm);
+    row.getCell(12).value = asBlank(match?.outside_air_max_cfm);
+    row.getCell(13).value = asBlank(match?.supply_fan_esp_in_wg);
+    row.getCell(14).value = asBlank(match?.supply_fan_tsp_in_wg);
+    row.getCell(15).value = asBlank(match?.supply_fan_qty);
+    row.getCell(16).value = asBlank(match?.supply_fan_bhp);
+    row.getCell(17).value = asBlank(match?.supply_fan_hp);
+    row.getCell(18).value = asBlank(match?.supply_fan_rpm);
+    row.getCell(19).value = [asBlank(match?.cooling_eat_db), asBlank(match?.cooling_eat_wb)].filter(v => v !== '').join(' / ');
+    row.getCell(20).value = [asBlank(match?.cooling_lat_db), asBlank(match?.cooling_lat_wb)].filter(v => v !== '').join(' / ');
+    row.getCell(21).value = asBlank(match?.cooling_sensible_capacity_mbh);
+    row.getCell(22).value = asBlank(match?.cooling_total_capacity_mbh);
+    row.getCell(23).value = asBlank(match?.heating_cfm);
+    row.getCell(24).value = asBlank(match?.heating_eat_f);
+    row.getCell(25).value = asBlank(match?.heating_lat_f);
+    row.getCell(26).value = asBlank(match?.heating_capacity_mbtu || unit.heatCapacity);
+    row.getCell(27).value = asBlank(match?.heating_gas_cfh);
+    row.getCell(28).value = asBlank(match?.heating_afue);
+    row.getCell(29).value = asBlank(match?.condenser_qty_fans);
+    row.getCell(30).value = asBlank(match?.condenser_hp_each);
+    row.getCell(31).value = asBlank(match?.condenser_type);
+    row.getCell(32).value = asBlank(match?.refrigerant_charge);
+    row.getCell(33).value = asBlank(match?.voltage_display || unit.voltage);
+    row.getCell(34).value = asBlank(match?.mca);
+    row.getCell(35).value = asBlank(match?.mocp);
+    row.getCell(36).value = asBlank(match?.filter_type);
+    row.getCell(37).value = asBlank(match?.operating_weight_lbs);
+    row.getCell(38).value = optionSummary(unit, match);
     row.commit();
   }
 
@@ -202,3 +217,4 @@ export default {
     return env.ASSETS.fetch(request);
   }
 };
+
