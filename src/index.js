@@ -72,9 +72,41 @@ function optionSummary(unit, match) {
   return normalizeText(unit.remarks) || normalizeText(match?.remarks_default) || [
     unit.hotGasReheat ? 'Hot Gas Reheat' : null,
     unit.economizer === 'barometric' ? 'Economizer w/ Barometric Relief' : null,
-    unit.economizer === 'powered' ? 'Economizer w/ Powered Exhaust' : null
+    unit.economizer === 'powered' ? 'Economizer w/ Powered Exhaust' : null,
+    unit.curb ? 'Curb' : null
   ].filter(Boolean).join(', ');
 }
+
+const COL = {
+  tag: 2,
+  areaServed: 3,
+  manufacturer: 4,
+  modelNumber: 5,
+  nominalTons: 6,
+  unitType: 7,
+  unitEer: 8,
+  seerIeerr: 9,
+  supplyCfm: 10,
+  supplyEsp: 11,
+  supplyQty: 12,
+  supplyBhp: 13,
+  supplyHp: 14,
+  supplyRpm: 15,
+  coolingEat: 16,
+  coolingLat: 17,
+  coolingSensible: 18,
+  coolingTotal: 19,
+  heatingCfm: 20,
+  heatingEat: 21,
+  heatingLat: 22,
+  heatingInput: 23,
+  heatingOutput: 24,
+  voltPh: 25,
+  mca: 26,
+  mocp: 27,
+  weight: 28,
+  remarks: 29,
+};
 
 async function getTemplateWorkbook(env) {
   const object = await env.TEMPLATES.get('SSR-Schedule-Example.xlsx');
@@ -124,6 +156,11 @@ async function findMatchingModel(env, unit) {
   return matches[0] || null;
 }
 
+function joinSlash(a, b) {
+  const parts = [asBlank(a), asBlank(b)].filter(v => v !== '');
+  return parts.length ? parts.join(' / ') : '';
+}
+
 async function createWorkbook(env, units) {
   const workbook = await getTemplateWorkbook(env);
   const worksheet = workbook.getWorksheet('Table 1') || workbook.worksheets[0];
@@ -138,43 +175,38 @@ async function createWorkbook(env, units) {
     const match = await findMatchingModel(env, unit);
 
     row.height = baseRow.height;
-    row.getCell(2).value = normalizeText(unit.tag);
-    row.getCell(3).value = asBlank(unit.areaServed);
-    row.getCell(4).value = asBlank(match?.brand || 'H&H Trecho');
-    row.getCell(5).value = asBlank(match?.model_number || buildSelectionCode(unit));
-    row.getCell(6).value = asBlank(match?.tonnage || unit.tonnage);
-    row.getCell(7).value = asBlank(match?.unit_type || unit.family);
-    row.getCell(8).value = asBlank(match?.unit_eer);
-    row.getCell(9).value = asBlank(match?.seer_ieer);
-    row.getCell(10).value = asBlank(match?.supply_airflow_cfm || match?.cooling_cfm);
-    row.getCell(11).value = asBlank(match?.outside_air_min_cfm);
-    row.getCell(12).value = asBlank(match?.outside_air_max_cfm);
-    row.getCell(13).value = asBlank(match?.supply_fan_esp_in_wg);
-    row.getCell(14).value = asBlank(match?.supply_fan_tsp_in_wg);
-    row.getCell(15).value = asBlank(match?.supply_fan_qty);
-    row.getCell(16).value = asBlank(match?.supply_fan_bhp);
-    row.getCell(17).value = asBlank(match?.supply_fan_hp);
-    row.getCell(18).value = asBlank(match?.supply_fan_rpm);
-    row.getCell(19).value = [asBlank(match?.cooling_eat_db), asBlank(match?.cooling_eat_wb)].filter(v => v !== '').join(' / ');
-    row.getCell(20).value = [asBlank(match?.cooling_lat_db), asBlank(match?.cooling_lat_wb)].filter(v => v !== '').join(' / ');
-    row.getCell(21).value = asBlank(match?.cooling_sensible_capacity_mbh);
-    row.getCell(22).value = asBlank(match?.cooling_total_capacity_mbh);
-    row.getCell(23).value = asBlank(match?.heating_cfm);
-    row.getCell(24).value = asBlank(match?.heating_eat_f);
-    row.getCell(25).value = asBlank(match?.heating_lat_f);
-    row.getCell(26).value = asBlank(match?.heating_capacity_mbtu || unit.heatCapacity);
-    row.getCell(27).value = asBlank(match?.heating_gas_cfh);
-    row.getCell(28).value = asBlank(match?.heating_afue);
-    row.getCell(29).value = asBlank(match?.condenser_qty_fans);
-    row.getCell(30).value = asBlank(match?.condenser_hp_each);
-    row.getCell(31).value = asBlank(match?.condenser_type);
-    row.getCell(32).value = asBlank(match?.refrigerant_charge);
-    row.getCell(33).value = asBlank(match?.voltage_display || unit.voltage);
-    row.getCell(34).value = asBlank(match?.mca);
-    row.getCell(35).value = asBlank(match?.mocp);
-    row.getCell(36).value = asBlank(match?.filter_type);
-    row.getCell(37).value = asBlank(match?.operating_weight_lbs);
-    row.getCell(38).value = optionSummary(unit, match);
+    row.getCell(COL.tag).value = normalizeText(unit.tag) || `RTU-${index + 1}`;
+    row.getCell(COL.areaServed).value = asBlank(unit.areaServed);
+    row.getCell(COL.manufacturer).value = asBlank(match?.brand || 'H&H Trecho');
+    row.getCell(COL.modelNumber).value = asBlank(match?.model_number || buildSelectionCode(unit));
+    row.getCell(COL.nominalTons).value = asBlank(match?.tonnage || unit.tonnage);
+    row.getCell(COL.unitType).value = asBlank(match?.unit_type || unit.family);
+    row.getCell(COL.unitEer).value = asBlank(match?.unit_eer);
+    row.getCell(COL.seerIeerr).value = asBlank(match?.seer_ieer);
+
+    row.getCell(COL.supplyCfm).value = asBlank(match?.supply_airflow_cfm || match?.cooling_cfm);
+    row.getCell(COL.supplyEsp).value = asBlank(match?.supply_fan_esp_in_wg);
+    row.getCell(COL.supplyQty).value = asBlank(match?.supply_fan_qty || match?.quantity || 1);
+    row.getCell(COL.supplyBhp).value = asBlank(match?.supply_fan_bhp);
+    row.getCell(COL.supplyHp).value = asBlank(match?.supply_fan_hp);
+    row.getCell(COL.supplyRpm).value = asBlank(match?.supply_fan_rpm);
+
+    row.getCell(COL.coolingEat).value = joinSlash(match?.cooling_eat_db, match?.cooling_eat_wb);
+    row.getCell(COL.coolingLat).value = joinSlash(match?.cooling_lat_db, match?.cooling_lat_wb);
+    row.getCell(COL.coolingSensible).value = asBlank(match?.cooling_sensible_capacity_mbh);
+    row.getCell(COL.coolingTotal).value = asBlank(match?.cooling_total_capacity_mbh);
+
+    row.getCell(COL.heatingCfm).value = asBlank(match?.heating_cfm || match?.supply_airflow_cfm || match?.cooling_cfm);
+    row.getCell(COL.heatingEat).value = asBlank(match?.heating_eat_f);
+    row.getCell(COL.heatingLat).value = asBlank(match?.heating_lat_f);
+    row.getCell(COL.heatingInput).value = asBlank(match?.heating_capacity_mbtu || unit.heatCapacity);
+    row.getCell(COL.heatingOutput).value = asBlank(match?.heating_output_capacity || match?.heating_afue);
+
+    row.getCell(COL.voltPh).value = asBlank(match?.voltage_display || unit.voltage);
+    row.getCell(COL.mca).value = asBlank(match?.mca);
+    row.getCell(COL.mocp).value = asBlank(match?.mocp);
+    row.getCell(COL.weight).value = asBlank(match?.operating_weight_lbs);
+    row.getCell(COL.remarks).value = optionSummary(unit, match);
     row.commit();
   }
 
@@ -217,4 +249,3 @@ export default {
     return env.ASSETS.fetch(request);
   }
 };
-
