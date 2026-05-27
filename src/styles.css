@@ -66,3 +66,71 @@ h2 { margin: 0; font-size: 1.2rem; }
 .danger-btn { color: var(--danger); }
 @media (max-width: 1080px) { .workspace.multi-layout { grid-template-columns: 1fr; } }
 @media (max-width: 720px) { .app-shell { padding: 20px 14px 32px; } .topbar, .panel-header { flex-direction: column; } .form-grid, .unit-meta-grid { grid-template-columns: 1fr; } .selector-panel, .output-panel { padding: 18px; } .domain-pill { white-space: normal; } .builder-actions, .unit-actions { flex-direction: column; } }
+
+.schedule-preview-shell {
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.schedule-preview-scroll {
+  overflow-x: auto;
+}
+
+.schedule-preview-table {
+  width: 100%;
+  min-width: 1080px;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+}
+
+.schedule-preview-table th,
+.schedule-preview-table td {
+  border: 1px solid var(--border);
+  padding: 10px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.schedule-preview-group-row th {
+  background: #e8e1d4;
+  color: var(--text);
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.schedule-preview-column-row th {
+  background: #f4efe7;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.schedule-preview-table tbody tr:nth-child(even) {
+  background: rgba(239, 235, 227, 0.45);
+}
+
+.schedule-preview-table tbody tr:hover {
+  background: var(--primary-soft);
+}
+
+.schedule-cell-tag {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.schedule-cell-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  min-width: 240px;
+}
+
+.schedule-actions-list {
+  margin-top: 18px;
+}
