@@ -246,8 +246,8 @@ export default function App() {
           <div className="logic-card">
             <span className="meta-label">Current unit summary</span>
             <ul>
-              <li>{selection.tag || 'Untitled tag'} · {selection.family} · {selection.efficiency} · {selection.tonnage} Tons</li>
-              <li>{selection.voltage} · {selection.heatType === 'None' ? 'No heat' : `${selection.heatType} ${selection.heatCapacity}`}</li>
+              <li>{selection.tag || 'Untitled tag'} Â· {selection.family} Â· {selection.efficiency} Â· {selection.tonnage} Tons</li>
+              <li>{selection.voltage} Â· {selection.heatType === 'None' ? 'No heat' : `${selection.heatType} ${selection.heatCapacity}`}</li>
               <li>{selectedOptionLabels.length ? selectedOptionLabels.join(', ') : 'No factory options selected'}</li>
               <li>Selection code: {selectionCode}</li>
             </ul>
@@ -294,11 +294,11 @@ export default function App() {
                     </thead>
                     <tbody>
                       {scheduledUnits.map((unit, index) => {
-                        const options = optionSummary(unit).join(', ') || '—';
+                        const options = optionSummary(unit).join(', ') || 'â€”';
                         return (
                           <tr key={`${unit.tag}-${index}`}>
                             <td className="schedule-cell-tag">{unit.tag}</td>
-                            <td>{unit.areaServed || '—'}</td>
+                            <td>{unit.areaServed || 'â€”'}</td>
                             <td>{unit.family}</td>
                             <td className="schedule-cell-code">{buildSelectionCode(unit)}</td>
                             <td>{unit.tonnage}</td>
@@ -306,7 +306,7 @@ export default function App() {
                             <td>{unit.heatType === 'None' ? 'No heat' : `${unit.heatType} ${unit.heatCapacity}`}</td>
                             <td>{unit.voltage}</td>
                             <td>{options}</td>
-                            <td>{unit.remarks?.trim() || '—'}</td>
+                            <td>{unit.remarks?.trim() || 'â€”'}</td>
                           </tr>
                         );
                       })}
