@@ -581,45 +581,38 @@ export default function App() {
             </>
           )}
 
-          <div className="unit-list schedule-actions-list">
-            {scheduledUnits.map((unit, index) => {
-              const options = optionSummary(unit).join(', ') || 'No options';
-              const resolved = previewRows[index];
+<div className="unit-list schedule-actions-list">
+  {scheduledUnits.map((unit, index) => {
+    const resolved = previewRows[index];
+    const statusText = resolved?.matchFound
+      ? `Matched model ${resolved.modelNumber}`
+      : `Using fallback selection code ${buildSelectionCode(unit)}`;
 
-              return (
-                <article className="unit-card" key={`${unit.tag}-${index}`}>
-                  <div className="unit-card-top">
-                    <div>
-                      <strong>{unit.tag}</strong>
-                      <p>{unit.areaServed || 'Area served not entered'}</p>
-                    </div>
-                    <span className="tag-pill">{unit.family}</span>
-                  </div>
-
-                  <div className="unit-meta-grid">
-                    <span>{unit.tonnage} Tons</span>
-                    <span>{unit.efficiency}</span>
-                    <span>{unit.voltage}</span>
-                    <span>{resolved?.modelNumber || buildSelectionCode(unit)}</span>
-                  </div>
-
-                  <p className="unit-options">{options}</p>
-
-                  <div className="unit-actions">
-                    <button className="secondary-btn" type="button" onClick={() => editUnit(index)}>
-                      Edit
-                    </button>
-                    <button className="secondary-btn" type="button" onClick={() => duplicateUnit(index)}>
-                      Duplicate
-                    </button>
-                    <button className="secondary-btn danger-btn" type="button" onClick={() => removeUnit(index)}>
-                      Remove
-                    </button>
-                  </div>
-                </article>
-              );
-            })}
+    return (
+      <article className="unit-card unit-card-compact" key={`${unit.tag}-${index}`}>
+        <div className="unit-card-top">
+          <div>
+            <strong>{unit.tag}</strong>
+            <p className="unit-status">{statusText}</p>
           </div>
+          <span className="tag-pill">{unit.family}</span>
+        </div>
+
+        <div className="unit-actions">
+          <button className="secondary-btn" type="button" onClick={() => editUnit(index)}>
+            Edit
+          </button>
+          <button className="secondary-btn" type="button" onClick={() => duplicateUnit(index)}>
+            Duplicate
+          </button>
+          <button className="secondary-btn danger-btn" type="button" onClick={() => removeUnit(index)}>
+            Remove
+          </button>
+        </div>
+      </article>
+    );
+  })}
+</div>
         </section>
       </main>
     </div>
