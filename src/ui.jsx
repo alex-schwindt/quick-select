@@ -97,7 +97,11 @@ function previewFallback(unit) {
     mocp: '—',
     weight: '—',
     remarks: unit.remarks?.trim() || options || '—',
-    matchFound: false
+    matchFound: false,
+    cutsheetUrl: '',
+    accessoriesUrl: '',
+    wiringUrl: '',
+    iomUrl: ''
   };
 }
 
@@ -192,7 +196,9 @@ export default function App() {
 
   const selectedOptionLabels = optionSummary(selection);
   const selectionCode = useMemo(() => buildSelectionCode(selection), [selection]);
-  const cutsheetBase = `https://selections.hhtrecho.com/cutsheets/${slugify(selectionCode)}`;
+  const currentResolvedRow = editingIndex !== null ? previewRows[editingIndex] : null;
+  const currentCutsheetHref =
+    currentResolvedRow?.cutsheetUrl || `https://selections.hhtrecho.com/cutsheets/${slugify(selectionCode)}.pdf`;
 
   function updateField(field, value) {
     setSelection((current) => ({ ...current, [field]: value }));
@@ -466,11 +472,11 @@ export default function App() {
 
             <a
               className="secondary-btn link-btn"
-              href={`${cutsheetBase}.pdf`}
+              href={currentCutsheetHref}
               target="_blank"
               rel="noopener noreferrer"
             >
-              Open base cut sheet
+              {currentResolvedRow?.cutsheetUrl ? 'Open matched cut sheet' : 'Open fallback cut sheet'}
             </a>
           </div>
 
@@ -485,6 +491,11 @@ export default function App() {
               </li>
               <li>{selectedOptionLabels.length ? selectedOptionLabels.join(', ') : 'No factory options selected'}</li>
               <li>Selection code: {selectionCode}</li>
+              <li>
+                {currentResolvedRow?.matchFound
+                  ? `Matched preview model: ${currentResolvedRow.modelNumber}`
+                  : 'Current builder is using fallback cut sheet logic until a DB match is returned'}
+              </li>
             </ul>
           </div>
         </section>
@@ -581,38 +592,48 @@ export default function App() {
             </>
           )}
 
-<div className="unit-list schedule-actions-list">
-  {scheduledUnits.map((unit, index) => {
-    const resolved = previewRows[index];
-    const statusText = resolved?.matchFound
-      ? `Matched model ${resolved.modelNumber}`
-      : `Using fallback selection code ${buildSelectionCode(unit)}`;
+          <div className="unit-list schedule-actions-list">
+            {scheduledUnits.map((unit, index) => {
+              const resolved = previewRows[index];
+              const fallbackCutsheetHref = `https://selections.hhtrecho.com/cutsheets/${slugify(buildSelectionCode(unit))}.pdf`;
+              const resolvedCutsheetHref = resolved?.cutsheetUrl || fallbackCutsheetHref;
+              const statusText = resolved?.matchFound
+                ? `Matched model ${resolved.modelNumber}`
+                : `Using fallback selection code ${buildSelectionCode(unit)}`;
 
-    return (
-      <article className="unit-card unit-card-compact" key={`${unit.tag}-${index}`}>
-        <div className="unit-card-top">
-          <div>
-            <strong>{unit.tag}</strong>
-            <p className="unit-status">{statusText}</p>
+              return (
+                <article className="unit-card unit-card-compact" key={`${unit.tag}-${index}`}>
+                  <div className="unit-card-top">
+                    <div>
+                      <strong>{unit.tag}</strong>
+                      <p className="unit-status">{statusText}</p>
+                    </div>
+                    <span className="tag-pill">{unit.family}</span>
+                  </div>
+
+                  <div className="unit-actions">
+                    <button className="secondary-btn" type="button" onClick={() => editUnit(index)}>
+                      Edit
+                    </button>
+                    <button className="secondary-btn" type="button" onClick={() => duplicateUnit(index)}>
+                      Duplicate
+                    </button>
+                    <button className="secondary-btn danger-btn" type="button" onClick={() => removeUnit(index)}>
+                      Remove
+                    </button>
+                    <a
+                      className="secondary-btn link-btn"
+                      href={resolvedCutsheetHref}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {resolved?.cutsheetUrl ? 'Cut sheet' : 'Fallback cut sheet'}
+                    </a>
+                  </div>
+                </article>
+              );
+            })}
           </div>
-          <span className="tag-pill">{unit.family}</span>
-        </div>
-
-        <div className="unit-actions">
-          <button className="secondary-btn" type="button" onClick={() => editUnit(index)}>
-            Edit
-          </button>
-          <button className="secondary-btn" type="button" onClick={() => duplicateUnit(index)}>
-            Duplicate
-          </button>
-          <button className="secondary-btn danger-btn" type="button" onClick={() => removeUnit(index)}>
-            Remove
-          </button>
-        </div>
-      </article>
-    );
-  })}
-</div>
         </section>
       </main>
     </div>
