@@ -134,3 +134,17 @@ h2 { margin: 0; font-size: 1.2rem; }
 .schedule-actions-list {
   margin-top: 18px;
 }
+
+.unit-card-compact {
+  padding: 16px 18px;
+}
+
+.unit-status {
+  margin: 6px 0 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.unit-card-compact .unit-actions {
+  margin-top: 14px;
+}
