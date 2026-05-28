@@ -17,55 +17,61 @@ function asBlank(value) {
 
 function normalizeFamily(value) {
   const v = normalizeText(value).toLowerCase();
-  if (['ac', 'gas pack', 'gaspack'].includes(v)) return 'ac';
-  if (['heat pump', 'heatpump', 'hp'].includes(v)) return 'hp';
-  return v.replace(/\s+/g, '-');
+  if (['ac', 'gas pack', 'gaspack'].includes(v)) return 'AC';
+  if (['heat pump', 'heatpump', 'hp'].includes(v)) return 'Heat Pump';
+  return normalizeText(value);
 }
 
 function normalizeEfficiency(value) {
   const v = normalizeText(value).toLowerCase();
-  if (['standard', 'std'].includes(v)) return 'std';
-  if (['high', 'high efficiency', 'high-efficiency'].includes(v)) return 'high';
-  return v.replace(/\s+/g, '-');
+  if (['standard', 'std'].includes(v)) return 'Standard';
+  if (['high', 'high efficiency', 'high-efficiency'].includes(v)) return 'High';
+  return normalizeText(value);
 }
 
 function normalizeVoltage(value) {
   const compact = normalizeText(value).toLowerCase().replace(/\s+/g, '').replace(/v/g, '');
-  if (['208/3', '208-3', '2083', '208/230/3', '2082303'].includes(compact.replace('/230', ''))) return '208-3';
-  if (['208/230/3', '2082303'].includes(compact)) return '208-3';
-  if (['460/3', '460-3', '4603'].includes(compact)) return '460-3';
-  return compact.replace(/\//g, '-');
+  if (['208/3', '208-3', '2083', '208/230/3', '2082303'].includes(compact.replace('/230', ''))) return '208/230/3';
+  if (['208/230/3', '2082303'].includes(compact)) return '208/230/3';
+  if (['460/3', '460-3', '4603'].includes(compact)) return '460/3';
+  return normalizeText(value);
 }
 
 function normalizeHeatType(value) {
   const v = normalizeText(value).toLowerCase();
-  if (['aluminum gas heat', 'gas heat', 'gas'].includes(v)) return 'gas';
-  if (['electric heat', 'electric'].includes(v)) return 'electric';
-  if (['none', 'no heat', ''].includes(v)) return 'none';
-  return v.replace(/\s+/g, '-');
+  if (['aluminum gas heat', 'gas heat', 'gas'].includes(v)) return 'Aluminum Gas Heat';
+  if (['electric heat', 'electric'].includes(v)) return 'Electric Heat';
+  if (['none', 'no heat', ''].includes(v)) return 'None';
+  return normalizeText(value);
 }
 
 function normalizeHeatCapacity(value) {
-  const v = normalizeText(value).toLowerCase();
-  if (!v) return '0';
-  return v.replace(/\s+/g, '').replace('mbh', '').replace('.0', '');
+  return normalizeText(value);
 }
 
-function normalizeTonnage(value) {
-  return String(value ?? '').trim().replace('.0', '');
+function normalizeEconomizer(value) {
+  const v = normalizeText(value).toLowerCase();
+  if (['powered', 'power exhaust', 'powered exhaust'].includes(v)) return 'powered';
+  if (['barometric', 'barometric relief'].includes(v)) return 'barometric';
+  return 'none';
+}
+
+function economizerLookupValue(unit) {
+  const econ = normalizeEconomizer(unit.economizer);
+  return econ === 'barometric' ? 'none' : econ;
 }
 
 function buildSelectionCode(unit) {
-  const familyCode = normalizeFamily(unit.family) === 'hp' ? 'HP' : 'AC';
-  const efficiencyCode = normalizeEfficiency(unit.efficiency) === 'high' ? 'HI' : 'STD';
+  const familyCode = normalizeFamily(unit.family) === 'Heat Pump' ? 'HP' : 'AC';
+  const efficiencyCode = normalizeEfficiency(unit.efficiency) === 'High' ? 'HI' : 'STD';
   const tonnageCode = String(unit.tonnage).replace('.', 'P');
-  const voltageCode = normalizeVoltage(unit.voltage) === '460-3' ? '460' : '208';
+  const voltageCode = normalizeVoltage(unit.voltage) === '460/3' ? '460' : '208';
   const heatTypeKey = normalizeHeatType(unit.heatType);
-  const heatCode = heatTypeKey === 'none'
+  const heatCode = heatTypeKey === 'None'
     ? 'NOHEAT'
-    : heatTypeKey === 'electric'
-      ? `ELEC-${normalizeHeatCapacity(unit.heatCapacity)}`
-      : `GAS-${normalizeHeatCapacity(unit.heatCapacity)}MBH`;
+    : heatTypeKey === 'Electric Heat'
+      ? `ELEC-${normalizeHeatCapacity(unit.heatCapacity).replace(/\s+/g, '').replace(/[^0-9A-Za-z-]/g, '')}`
+      : `GAS-${normalizeHeatCapacity(unit.heatCapacity).replace(/\s+/g, '').replace(/[^0-9A-Za-z-]/g, '')}`;
   const reheatCode = unit.hotGasReheat ? 'HGRH' : 'NOHGRH';
   const econCode = unit.economizer === 'barometric' ? 'ECO-BARO' : unit.economizer === 'powered' ? 'ECO-PE' : 'NOECO';
   return `${familyCode}-${efficiencyCode}-${tonnageCode}-${voltageCode}-${heatCode}-${reheatCode}-${econCode}`;
@@ -121,15 +127,8 @@ async function getTemplateWorkbook(env) {
 }
 
 async function listCatalog(env, filters) {
-  const familyKey = normalizeFamily(filters.family);
-  const efficiencyKey = normalizeEfficiency(filters.efficiency);
-  const tonnageKey = normalizeTonnage(filters.tonnage);
-  const voltageKey = normalizeVoltage(filters.voltage);
-  const heatTypeKey = normalizeHeatType(filters.heatType);
-  const heatCapacityKey = normalizeHeatCapacity(filters.heatCapacity);
-
   let sql = `
-    SELECT m.*, d.cutsheet_url, d.accessories_url
+    SELECT m.*, d.cutsheet_url, d.accessories_url, d.wiring_url, d.iom_url
     FROM unit_models m
     LEFT JOIN unit_documents d ON d.model_id = m.id
     WHERE 1 = 1
@@ -137,31 +136,39 @@ async function listCatalog(env, filters) {
   const binds = [];
 
   if (filters.family) {
-    sql += ' AND m.family_key = ?';
-    binds.push(familyKey);
+    sql += ' AND m.family = ?';
+    binds.push(filters.family);
   }
   if (filters.efficiency) {
-    sql += ' AND m.efficiency_key = ?';
-    binds.push(efficiencyKey);
+    sql += ' AND m.efficiency = ?';
+    binds.push(filters.efficiency);
   }
-  if (filters.tonnage) {
-    sql += ' AND m.tonnage_key = ?';
-    binds.push(tonnageKey);
+  if (filters.tonnage !== '' && filters.tonnage !== null && filters.tonnage !== undefined) {
+    sql += ' AND m.tonnage = ?';
+    binds.push(filters.tonnage);
   }
   if (filters.voltage) {
-    sql += ' AND m.voltage_key = ?';
-    binds.push(voltageKey);
+    sql += ' AND m.voltage = ?';
+    binds.push(filters.voltage);
   }
   if (filters.heatType) {
-    sql += ' AND m.heat_type_key = ?';
-    binds.push(heatTypeKey);
+    sql += ' AND m.heat_type = ?';
+    binds.push(filters.heatType);
   }
-  if (filters.heatCapacity || heatTypeKey !== 'none') {
-    sql += ' AND m.heat_capacity_key = ?';
-    binds.push(heatCapacityKey);
+  if (filters.heatCapacity || normalizeHeatType(filters.heatType) !== 'None') {
+    sql += ' AND m.heat_capacity = ?';
+    binds.push(filters.heatCapacity || '');
+  }
+  if (filters.hotGasReheat !== undefined) {
+    sql += ' AND m.hot_gas_reheat = ?';
+    binds.push(filters.hotGasReheat ? 1 : 0);
+  }
+  if (filters.economizer) {
+    sql += ' AND m.economizer = ?';
+    binds.push(filters.economizer);
   }
 
-  sql += ' ORDER BY m.family, m.tonnage, m.model_number';
+  sql += ' ORDER BY m.model_number';
 
   const stmt = env.DB.prepare(sql).bind(...binds);
   const result = await stmt.all();
@@ -170,12 +177,14 @@ async function listCatalog(env, filters) {
 
 async function findMatchingModel(env, unit) {
   const matches = await listCatalog(env, {
-    family: unit.family,
-    efficiency: unit.efficiency,
+    family: normalizeFamily(unit.family),
+    efficiency: normalizeEfficiency(unit.efficiency),
     tonnage: unit.tonnage,
-    voltage: unit.voltage,
-    heatType: unit.heatType,
-    heatCapacity: unit.heatCapacity || ''
+    voltage: normalizeVoltage(unit.voltage),
+    heatType: normalizeHeatType(unit.heatType),
+    heatCapacity: normalizeHeatCapacity(unit.heatCapacity || ''),
+    hotGasReheat: Boolean(unit.hotGasReheat),
+    economizer: economizerLookupValue(unit)
   });
 
   return matches[0] || null;
@@ -211,13 +220,17 @@ function buildResolvedScheduleRow(unit, match, index = 0) {
     heatingLat: asBlank(match?.heating_lat_f),
     heatingInput: asBlank(match?.heating_capacity_mbtu || unit.heatCapacity),
     heatingOutput: asBlank(match?.heating_output_capacity || match?.heating_afue),
-    voltPh: asBlank(match?.voltage_display || unit.voltage),
+    voltPh: asBlank(match?.voltage || unit.voltage),
     mca: asBlank(match?.mca),
     mocp: asBlank(match?.mocp),
     weight: asBlank(match?.operating_weight_lbs),
     remarks: optionSummary(unit, match),
     selectionCode: buildSelectionCode(unit),
-    matchFound: Boolean(match)
+    matchFound: Boolean(match),
+    cutsheetUrl: asBlank(match?.cutsheet_url),
+    accessoriesUrl: asBlank(match?.accessories_url),
+    wiringUrl: asBlank(match?.wiring_url),
+    iomUrl: asBlank(match?.iom_url)
   };
 }
 
@@ -291,12 +304,14 @@ export default {
 
     if (request.method === 'GET' && url.pathname === '/api/catalog') {
       const filters = {
-        family: url.searchParams.get('family') || '',
-        efficiency: url.searchParams.get('efficiency') || '',
+        family: normalizeFamily(url.searchParams.get('family') || ''),
+        efficiency: normalizeEfficiency(url.searchParams.get('efficiency') || ''),
         tonnage: url.searchParams.get('tonnage') || '',
-        voltage: url.searchParams.get('voltage') || '',
-        heatType: url.searchParams.get('heatType') || '',
-        heatCapacity: url.searchParams.get('heatCapacity') || ''
+        voltage: normalizeVoltage(url.searchParams.get('voltage') || ''),
+        heatType: normalizeHeatType(url.searchParams.get('heatType') || ''),
+        heatCapacity: normalizeHeatCapacity(url.searchParams.get('heatCapacity') || ''),
+        hotGasReheat: (url.searchParams.get('hotGasReheat') || '') === 'true',
+        economizer: economizerLookupValue({ economizer: url.searchParams.get('economizer') || 'none' })
       };
 
       const results = await listCatalog(env, filters);
