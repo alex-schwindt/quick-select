@@ -41,6 +41,10 @@ function slugify(value) {
   return String(value).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 }
 
+function formatVoltageDisplay(value) {
+  return value === '208/230/3' ? '208-230/3' : value;
+}
+
 function buildSelectionCode(state) {
   const familyCode = state.family === 'Heat Pump' ? 'HP' : 'AC';
   const efficiencyCode = state.efficiency === 'High' ? 'HI' : 'STD';
@@ -368,11 +372,11 @@ export default function App() {
             </label>
 
             <label className="form-field">
-              <span className="meta-label">Voltage</span>
-              <select value={selection.voltage} onChange={(event) => updateField('voltage', event.target.value)}>
+             <span className="meta-label">Voltage</span>
+             <select value={selection.voltage} onChange={(event) => updateField('voltage', event.target.value)}>
                 {VOLTAGES.map((option) => (
                   <option key={option} value={option}>
-                    {option}
+                     {formatVoltageDisplay(option)}
                   </option>
                 ))}
               </select>
@@ -487,7 +491,7 @@ export default function App() {
                 {selection.tag || 'Untitled tag'} · {selection.family} · {selection.efficiency} · {selection.tonnage} Tons
               </li>
               <li>
-                {selection.voltage} · {selection.heatType === 'None' ? 'No heat' : `${selection.heatType} ${selection.heatCapacity}`}
+                {formatVoltageDisplay(selection.voltage)} · {selection.heatType === 'None' ? 'No heat' : `${selection.heatType} ${selection.heatCapacity}`}
               </li>
               <li>{selectedOptionLabels.length ? selectedOptionLabels.join(', ') : 'No factory options selected'}</li>
               <li>Selection code: {selectionCode}</li>
@@ -570,7 +574,7 @@ export default function App() {
                             </td>
                             <td>{row.nominalTons || '—'}</td>
                             <td>{row.unitType || '—'}</td>
-                            <td>{row.voltPh || '—'}</td>
+                            <td>{row.voltPh ? formatVoltageDisplay(row.voltPh) : '—'}</td>
                             <td>{row.supplyCfm || '—'}</td>
                             <td>{row.coolingTotal || '—'}</td>
                             <td>{row.heatingInput || '—'}</td>
