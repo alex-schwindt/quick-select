@@ -32,38 +32,36 @@ function normalizeText(value) {
 
 function normalizeFamily(value) {
   const v = normalizeText(value).toLowerCase();
-  if (['ac', 'gas pack', 'gaspack'].includes(v)) return 'ac';
-  if (['heat pump', 'heatpump', 'hp'].includes(v)) return 'hp';
-  return v.replace(/\s+/g, '-');
+  if (['ac', 'gas pack', 'gaspack'].includes(v)) return 'AC';
+  if (['heat pump', 'heatpump', 'hp'].includes(v)) return 'Heat Pump';
+  return normalizeText(value);
 }
 
 function normalizeEfficiency(value) {
   const v = normalizeText(value).toLowerCase();
-  if (['standard', 'std'].includes(v)) return 'std';
-  if (['high', 'high efficiency', 'high-efficiency'].includes(v)) return 'high';
-  return v.replace(/\s+/g, '-');
+  if (['standard', 'std'].includes(v)) return 'Standard';
+  if (['high', 'high efficiency', 'high-efficiency'].includes(v)) return 'High';
+  return normalizeText(value);
 }
 
 function normalizeVoltage(value) {
   const compact = normalizeText(value).toLowerCase().replace(/\s+/g, '').replace(/v/g, '');
-  if (['208/3', '208-3', '2083', '208/230/3', '2082303', '208-3-60'].includes(compact.replace('/230', ''))) return '208-3';
-  if (['208/230/3', '2082303', '208-3-60'].includes(compact)) return '208-3';
-  if (['460/3', '460-3', '4603', '460-3-60'].includes(compact)) return '460-3';
-  return compact.replace(/\//g, '-');
+  if (['208/3', '208-3', '2083', '208/230/3', '2082303', '208-3-60'].includes(compact.replace('/230', ''))) return '208/230/3';
+  if (['208/230/3', '2082303', '208-3-60'].includes(compact)) return '208/230/3';
+  if (['460/3', '460-3', '4603', '460-3-60'].includes(compact)) return '460/3';
+  return normalizeText(value);
 }
 
 function normalizeHeatType(value) {
   const v = normalizeText(value).toLowerCase();
-  if (['aluminum gas heat', 'gas heat', 'gas'].includes(v)) return 'gas';
-  if (['electric heat', 'electric'].includes(v)) return 'electric';
-  if (['none', 'no heat', ''].includes(v)) return 'none';
-  return v.replace(/\s+/g, '-');
+  if (['aluminum gas heat', 'gas heat', 'gas'].includes(v)) return 'Aluminum Gas Heat';
+  if (['electric heat', 'electric'].includes(v)) return 'Electric Heat';
+  if (['none', 'no heat', ''].includes(v)) return 'None';
+  return normalizeText(value);
 }
 
 function normalizeHeatCapacity(value) {
-  const v = normalizeText(value).toLowerCase();
-  if (!v) return '0';
-  return v.replace(/\s+/g, '').replace('mbh', '').replace('.0', '');
+  return normalizeText(value);
 }
 
 function normalizeTonnage(value) {
@@ -71,16 +69,19 @@ function normalizeTonnage(value) {
 }
 
 function buildSelectionCode(unit) {
-  const familyCode = normalizeFamily(unit.family) === 'hp' ? 'HP' : 'AC';
-  const efficiencyCode = normalizeEfficiency(unit.efficiency) === 'high' ? 'HI' : 'STD';
+  const familyCode = normalizeFamily(unit.family) === 'Heat Pump' ? 'HP' : 'AC';
+  const efficiencyCode = normalizeEfficiency(unit.efficiency) === 'High' ? 'HI' : 'STD';
   const tonnageCode = String(unit.tonnage).replace('.', 'P');
-  const voltageCode = normalizeVoltage(unit.voltage) === '460-3' ? '460' : '208';
+  const voltageCode = normalizeVoltage(unit.voltage) === '460/3' ? '460' : '208';
   const heatTypeKey = normalizeHeatType(unit.heatType);
-  const heatCode = heatTypeKey === 'none'
+  const normalizedHeatCapacity = normalizeHeatCapacity(unit.heatCapacity).replace(/\s+/g, '');
+
+  const heatCode = heatTypeKey === 'None'
     ? 'NOHEAT'
-    : heatTypeKey === 'electric'
-      ? `ELEC-${normalizeHeatCapacity(unit.heatCapacity)}`
-      : `GAS-${normalizeHeatCapacity(unit.heatCapacity)}MBH`;
+    : heatTypeKey === 'Electric Heat'
+      ? `ELEC-${normalizedHeatCapacity}`
+      : `GAS-${normalizedHeatCapacity}`;
+
   const reheatCode = unit.hotGasReheat ? 'HGRH' : 'NOHGRH';
   const econCode = unit.economizer === 'barometric' ? 'ECO-BARO' : unit.economizer === 'powered' ? 'ECO-PE' : 'NOECO';
   return `${familyCode}-${efficiencyCode}-${tonnageCode}-${voltageCode}-${heatCode}-${reheatCode}-${econCode}`;
@@ -577,9 +578,11 @@ async function listCatalog(env, filters = {}) {
     sql += ' AND m.heat_type = ?';
     binds.push(filters.heatType);
   }
-  if (filters.heatCapacity && normalizeHeatType(filters.heatType) !== 'none') {
+  if (normalizeHeatType(filters.heatType) !== 'None') {
     sql += ' AND m.heat_capacity = ?';
-    binds.push(filters.heatCapacity);
+    binds.push(filters.heatCapacity || '');
+  } else {
+    sql += ` AND COALESCE(m.heat_capacity, '') = ''`;
   }
 
   sql += ' ORDER BY m.model_number';
