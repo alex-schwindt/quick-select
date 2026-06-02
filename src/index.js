@@ -109,21 +109,25 @@ function parseDescriptor(descriptor) {
 
   const tonnage = tonnageMatch ? normalizeTonnage(tonnageMatch[1]) : '';
   const heatCapacity = heatMatch ? normalizeHeatCapacity(heatMatch[1]) : '0';
-  const heatType = heatMatch ? normalizeHeatType(heatMatch[2]) : 'none';
+  const heatType = heatMatch ? normalizeHeatType(heatMatch[2]) : 'None';
   const voltage = normalizeVoltage(voltageMatch ? voltageMatch[1] : '');
+  const familyLabel = /\bHP\b/i.test(text) ? 'Heat Pump' : 'AC';
+  const familyKey = familyLabel === 'Heat Pump' ? 'hp' : 'ac';
+  const efficiencyLabel = 'Standard';
+  const efficiencyKey = normalizeEfficiency(efficiencyLabel);
 
   return {
-    family_key: 'ac',
-    family_label: 'AC',
-    efficiency_key: 'std',
-    efficiency_label: 'Standard',
+    family_key: familyKey,
+    family_label: familyLabel,
+    efficiency_key: efficiencyKey,
+    efficiency_label: efficiencyLabel,
     tonnage_key: tonnage || null,
     tonnage_value: tonnage ? Number(tonnage) : null,
     voltage_key: voltage || null,
     voltage_label: voltage || null,
     aux_heat_type_key: heatType || null,
-    aux_heat_type_label: heatType ? heatType.toUpperCase() : null,
-    aux_heat_capacity_key: heatCapacity || null,
+    aux_heat_type_label: heatType || null,
+    aux_heat_capacity_key: heatCapacity && heatCapacity !== '0' ? heatCapacity : null,
     aux_heat_capacity_label: heatCapacity && heatCapacity !== '0' ? `${heatCapacity} MBH` : null,
   };
 }
@@ -259,13 +263,17 @@ async function upsertUnitModelV2(env, batchId, stagedRow) {
     SELECT * FROM unit_models_v2 WHERE model_number = ?
   `).bind(stagedRow.raw_model_number).first();
 
+  const efficiencyKey = normalizeEfficiency(
+    stagedRow.efficiency_label || stagedRow.efficiency_key || 'Standard'
+  );
+
   if (!existing) {
     const inserted = await env.DB.prepare(`
       INSERT INTO unit_models_v2 (
         model_number, family_key, family_label, tonnage_key, tonnage_value,
         voltage_key, voltage_label, aux_heat_type_key, aux_heat_type_label,
-        aux_heat_capacity_key, aux_heat_capacity_label, source_batch_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        aux_heat_capacity_key, aux_heat_capacity_label, efficiency_key, source_batch_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       stagedRow.raw_model_number,
       stagedRow.family_key,
@@ -278,6 +286,7 @@ async function upsertUnitModelV2(env, batchId, stagedRow) {
       stagedRow.aux_heat_type_label,
       stagedRow.aux_heat_capacity_key,
       stagedRow.aux_heat_capacity_label,
+      efficiencyKey,
       batchId,
     ).run();
 
@@ -285,11 +294,17 @@ async function upsertUnitModelV2(env, batchId, stagedRow) {
   }
 
   const changed = [
-    existing.family_key !== stagedRow.family_key,
+    String(existing.family_key || '') !== String(stagedRow.family_key || ''),
+    String(existing.family_label || '') !== String(stagedRow.family_label || ''),
     String(existing.tonnage_key || '') !== String(stagedRow.tonnage_key || ''),
+    Number(existing.tonnage_value ?? null) !== Number(stagedRow.tonnage_value ?? null),
     String(existing.voltage_key || '') !== String(stagedRow.voltage_key || ''),
+    String(existing.voltage_label || '') !== String(stagedRow.voltage_label || ''),
     String(existing.aux_heat_type_key || '') !== String(stagedRow.aux_heat_type_key || ''),
+    String(existing.aux_heat_type_label || '') !== String(stagedRow.aux_heat_type_label || ''),
     String(existing.aux_heat_capacity_key || '') !== String(stagedRow.aux_heat_capacity_key || ''),
+    String(existing.aux_heat_capacity_label || '') !== String(stagedRow.aux_heat_capacity_label || ''),
+    String(existing.efficiency_key || '') !== String(efficiencyKey || ''),
   ].some(Boolean);
 
   if (!changed) {
@@ -300,7 +315,8 @@ async function upsertUnitModelV2(env, batchId, stagedRow) {
     UPDATE unit_models_v2
     SET family_key = ?, family_label = ?, tonnage_key = ?, tonnage_value = ?,
         voltage_key = ?, voltage_label = ?, aux_heat_type_key = ?, aux_heat_type_label = ?,
-        aux_heat_capacity_key = ?, aux_heat_capacity_label = ?, source_batch_id = ?, updated_at = CURRENT_TIMESTAMP
+        aux_heat_capacity_key = ?, aux_heat_capacity_label = ?, efficiency_key = ?,
+        source_batch_id = ?, updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `).bind(
     stagedRow.family_key,
@@ -313,6 +329,7 @@ async function upsertUnitModelV2(env, batchId, stagedRow) {
     stagedRow.aux_heat_type_label,
     stagedRow.aux_heat_capacity_key,
     stagedRow.aux_heat_capacity_label,
+    efficiencyKey,
     batchId,
     existing.id,
   ).run();
@@ -539,6 +556,7 @@ async function handleGetImportBatchCatalogResults(env, batchId) {
       um.voltage_key,
       um.aux_heat_type_key,
       um.aux_heat_capacity_key,
+      um.efficiency_key,
       imr.created_at
     FROM import_model_results imr
     JOIN staging_schedule_rows ssr ON ssr.id = imr.staging_row_id
@@ -782,7 +800,7 @@ export default {
       }
     }
 
-        if (request.method === 'POST' && url.pathname === '/api/preview-schedule') {
+    if (request.method === 'POST' && url.pathname === '/api/preview-schedule') {
       try {
         const payload = await request.json();
         const units = Array.isArray(payload?.units) ? payload.units : [];
