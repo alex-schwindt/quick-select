@@ -1,750 +1,825 @@
-import { useEffect, useMemo, useState } from 'react';
+import ExcelJS from 'exceljs';
 
-const PRODUCT_FAMILIES = ['Heat Pump', 'AC'];
-const TONNAGES = [3, 4, 5, 6.5, 7.5, 8.5, 10, 12.5, 15, 17.5, 20, 25, 27.5];
-const VOLTAGES = ['208/230/3', '460/3'];
-
-const FAMILY_RULES = {
-  'Heat Pump': { efficiencies: ['Standard'], heatTypes: ['None', 'Electric Heat'] },
-  AC: { efficiencies: ['Standard', 'High'], heatTypes: ['None', 'Electric Heat', 'Aluminum Gas Heat'] }
-};
-
-const HEAT_BY_TONNAGE = {
-  3: { gas: ['60 MBH', '80 MBH'], electric: ['3 kW', '6 kW', '9 kW', '15 kW'] },
-  4: { gas: ['60 MBH', '80 MBH', '120 MBH'], electric: ['6 kW', '9 kW', '15 kW', '20 kW'] },
-  5: { gas: ['80 MBH', '120 MBH', '160 MBH'], electric: ['6 kW', '9 kW', '15 kW', '20 kW', '24 kW'] },
-  6.5: { gas: ['120 MBH', '180 MBH'], electric: ['9 kW', '18 kW', '24 kW', '36 kW'] },
-  7.5: { gas: ['120 MBH', '180 MBH'], electric: ['9 kW', '18 kW', '24 kW', '36 kW'] },
-  8.5: { gas: ['120 MBH', '180 MBH'], electric: ['9 kW', '18 kW', '24 kW', '36 kW'] },
-  10: { gas: ['180 MBH', '240 MBH'], electric: ['18 kW', '24 kW', '36 kW', '54 kW'] },
-  12.5: { gas: ['180 MBH', '240 MBH'], electric: ['18 kW', '24 kW', '36 kW', '54 kW'] },
-  15: { gas: ['220 MBH', '400 MBH'], electric: ['25 kW', '50 kW', '75 kW'] },
-  17.5: { gas: ['220 MBH', '400 MBH'], electric: ['25 kW', '50 kW', '75 kW'] },
-  20: { gas: ['220 MBH', '400 MBH'], electric: ['25 kW', '50 kW', '75 kW'] },
-  25: { gas: ['220 MBH', '400 MBH'], electric: ['25 kW', '50 kW', '75 kW'] },
-  27.5: { gas: ['220 MBH', '400 MBH'], electric: ['25 kW', '50 kW', '75 kW'] }
-};
-
-function nextDefaultTag(units) {
-  let i = 1;
-  while (units.some((unit) => unit.tag === `RTU-${i}`)) i += 1;
-  return `RTU-${i}`;
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
 }
 
-function slugify(value) {
-  return String(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/(^-|-$)/g, '');
+function toInt(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
 
-function formatVoltageDisplay(value) {
-  return value === '208/230/3' ? '208-230/3' : value;
+function cleanBlank(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  return text === '' ? null : text;
 }
 
-function buildSelectionCode(state) {
-  const familyCode = state.family === 'Heat Pump' ? 'HP' : 'AC';
-  const efficiencyCode = state.efficiency === 'High' ? 'HI' : 'STD';
-  const tonnageCode = String(state.tonnage).replace('.', 'P');
-  const voltageCode = state.voltage === '460/3' ? '460' : '208';
-  const heatCode =
-    state.heatType === 'None'
-      ? 'NOHEAT'
-      : state.heatType === 'Electric Heat'
-        ? `ELEC-${String(state.heatCapacity || '').replace(/\s+/g, '').replace(/[^0-9A-Za-z-]/g, '')}`
-        : `GAS-${String(state.heatCapacity || '').replace(/\s+/g, '').replace(/[^0-9A-Za-z-]/g, '')}`;
-  const reheatCode = state.hotGasReheat ? 'HGRH' : 'NOHGRH';
-  const econCode =
-    state.economizer === 'barometric'
-      ? 'ECO-BARO'
-      : state.economizer === 'powered'
-        ? 'ECO-PE'
-        : 'NOECO';
+function asBlank(value) {
+  return value === null || value === undefined || value === '' ? '' : value;
+}
 
+function coerceArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizeText(value) {
+  return String(value ?? '').trim();
+}
+
+function normalizeFamily(value) {
+  const v = normalizeText(value).toLowerCase();
+  if (['ac', 'gas pack', 'gaspack'].includes(v)) return 'ac';
+  if (['heat pump', 'heatpump', 'hp'].includes(v)) return 'hp';
+  return v.replace(/\s+/g, '-');
+}
+
+function normalizeEfficiency(value) {
+  const v = normalizeText(value).toLowerCase();
+  if (['standard', 'std'].includes(v)) return 'std';
+  if (['high', 'high efficiency', 'high-efficiency'].includes(v)) return 'high';
+  return v.replace(/\s+/g, '-');
+}
+
+function normalizeVoltage(value) {
+  const compact = normalizeText(value).toLowerCase().replace(/\s+/g, '').replace(/v/g, '');
+  if (['208/3', '208-3', '2083', '208/230/3', '2082303', '208-3-60'].includes(compact.replace('/230', ''))) return '208-3';
+  if (['208/230/3', '2082303', '208-3-60'].includes(compact)) return '208-3';
+  if (['460/3', '460-3', '4603', '460-3-60'].includes(compact)) return '460-3';
+  return compact.replace(/\//g, '-');
+}
+
+function normalizeHeatType(value) {
+  const v = normalizeText(value).toLowerCase();
+  if (['aluminum gas heat', 'gas heat', 'gas'].includes(v)) return 'gas';
+  if (['electric heat', 'electric'].includes(v)) return 'electric';
+  if (['none', 'no heat', ''].includes(v)) return 'none';
+  return v.replace(/\s+/g, '-');
+}
+
+function normalizeHeatCapacity(value) {
+  const v = normalizeText(value).toLowerCase();
+  if (!v) return '0';
+  return v.replace(/\s+/g, '').replace('mbh', '').replace('.0', '');
+}
+
+function normalizeTonnage(value) {
+  return String(value ?? '').trim().replace('.0', '');
+}
+
+function buildSelectionCode(unit) {
+  const familyCode = normalizeFamily(unit.family) === 'hp' ? 'HP' : 'AC';
+  const efficiencyCode = normalizeEfficiency(unit.efficiency) === 'high' ? 'HI' : 'STD';
+  const tonnageCode = String(unit.tonnage).replace('.', 'P');
+  const voltageCode = normalizeVoltage(unit.voltage) === '460-3' ? '460' : '208';
+  const heatTypeKey = normalizeHeatType(unit.heatType);
+  const heatCode = heatTypeKey === 'none'
+    ? 'NOHEAT'
+    : heatTypeKey === 'electric'
+      ? `ELEC-${normalizeHeatCapacity(unit.heatCapacity)}`
+      : `GAS-${normalizeHeatCapacity(unit.heatCapacity)}MBH`;
+  const reheatCode = unit.hotGasReheat ? 'HGRH' : 'NOHGRH';
+  const econCode = unit.economizer === 'barometric' ? 'ECO-BARO' : unit.economizer === 'powered' ? 'ECO-PE' : 'NOECO';
   return `${familyCode}-${efficiencyCode}-${tonnageCode}-${voltageCode}-${heatCode}-${reheatCode}-${econCode}`;
 }
 
-function optionSummary(unit) {
-  return [
+function optionSummary(unit, match) {
+  return normalizeText(unit.remarks) || normalizeText(match?.remarks_default) || [
     unit.hotGasReheat ? 'Hot Gas Reheat' : null,
     unit.economizer === 'barometric' ? 'Economizer w/ Barometric Relief' : null,
-    unit.economizer === 'powered' ? 'Economizer w/ Powered Exhaust' : null
-  ].filter(Boolean);
+    unit.economizer === 'powered' ? 'Economizer w/ Powered Exhaust' : null,
+    unit.curb ? 'Curb' : null,
+  ].filter(Boolean).join(', ');
 }
 
-function makeInitialState(tag = 'RTU-1') {
+function joinSlash(a, b) {
+  const parts = [asBlank(a), asBlank(b)].filter((v) => v !== '');
+  return parts.length ? parts.join('/') : '';
+}
+
+function parseDescriptor(descriptor) {
+  const text = normalizeText(descriptor);
+  const tonnageMatch = text.match(/^(\d+(?:\.\d+)?)\s*-?\s*Ton/i);
+  const heatMatch = text.match(/(\d+(?:\.\d+)?)\s*MBH\s*(Gas|Electric)/i);
+  const voltageMatch = text.match(/,\s*(2083|208-3|208\/3|4603|460-3|460\/3)/i);
+
+  const tonnage = tonnageMatch ? normalizeTonnage(tonnageMatch[1]) : '';
+  const heatCapacity = heatMatch ? normalizeHeatCapacity(heatMatch[1]) : '0';
+  const heatType = heatMatch ? normalizeHeatType(heatMatch[2]) : 'none';
+  const voltage = normalizeVoltage(voltageMatch ? voltageMatch[1] : '');
+
   return {
-    tag,
-    family: 'Heat Pump',
-    efficiency: 'Standard',
-    tonnage: 7.5,
-    voltage: '460/3',
-    heatType: 'None',
-    heatCapacity: '',
-    hotGasReheat: false,
-    economizer: 'none',
-    areaServed: '',
-    remarks: ''
+    family_key: 'ac',
+    family_label: 'AC',
+    efficiency_key: 'std',
+    efficiency_label: 'Standard',
+    tonnage_key: tonnage || null,
+    tonnage_value: tonnage ? Number(tonnage) : null,
+    voltage_key: voltage || null,
+    voltage_label: voltage || null,
+    aux_heat_type_key: heatType || null,
+    aux_heat_type_label: heatType ? heatType.toUpperCase() : null,
+    aux_heat_capacity_key: heatCapacity || null,
+    aux_heat_capacity_label: heatCapacity && heatCapacity !== '0' ? `${heatCapacity} MBH` : null,
   };
 }
 
-function previewFallback(unit) {
-  const options = optionSummary(unit).join(', ');
-  return {
-    tag: unit.tag,
-    areaServed: unit.areaServed || '—',
-    manufacturer: 'H&H Trecho',
-    modelNumber: buildSelectionCode(unit),
-    nominalTons: unit.tonnage,
-    unitType: unit.family,
-    supplyCfm: '—',
-    coolingTotal: '—',
-    heatingInput: unit.heatType === 'None' ? 'No heat' : `${unit.heatType} ${unit.heatCapacity}`,
-    voltPh: unit.voltage,
-    mca: '—',
-    mocp: '—',
-    weight: '—',
-    remarks: unit.remarks?.trim() || options || '—',
-    matchFound: false,
-    cutsheetUrl: '',
-    accessoriesUrl: '',
-    wiringUrl: '',
-    iomUrl: ''
-  };
+function getCellValue(row, index) {
+  const cell = row.getCell(index);
+  const value = cell?.value;
+  if (value && typeof value === 'object') {
+    if ('text' in value) return normalizeText(value.text);
+    if ('result' in value) return normalizeText(value.result);
+    if ('richText' in value && Array.isArray(value.richText)) {
+      return normalizeText(value.richText.map((part) => part.text || '').join(''));
+    }
+  }
+  return normalizeText(value);
 }
 
-function SchedulePreviewTable({ rows }) {
-  if (!rows.length) {
-    return <div className="empty-state">No schedule rows yet. Add a unit to see the live preview.</div>;
+async function loadWorkbookFromSource(env, sourceFilename) {
+  const r2Object = await env.TEMPLATES.get(sourceFilename);
+  if (r2Object) {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(await r2Object.arrayBuffer());
+    return workbook;
   }
-
-  return (
-    <div className="schedule-preview-shell">
-      <div className="schedule-preview-scroll">
-        <table className="schedule-preview-table">
-          <thead>
-            <tr className="schedule-preview-column-row">
-              <th>Tag</th>
-              <th>Area Served</th>
-              <th>Manufacturer</th>
-              <th>Model Number</th>
-              <th>Tons</th>
-              <th>Unit Type</th>
-              <th>Supply CFM</th>
-              <th>Cooling Total</th>
-              <th>Heating Input</th>
-              <th>Voltage</th>
-              <th>MCA</th>
-              <th>MOCP</th>
-              <th>Weight</th>
-              <th>Remarks</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr key={`${row.tag}-${row.modelNumber}`}>
-                <td className="schedule-cell-tag">{row.tag}</td>
-                <td>{row.areaServed || '—'}</td>
-                <td>{row.manufacturer || '—'}</td>
-                <td className="schedule-cell-code">
-                  {row.modelNumber}
-                  {!row.matchFound ? ' *' : ''}
-                </td>
-                <td>{row.nominalTons || '—'}</td>
-                <td>{row.unitType || '—'}</td>
-                <td>{row.supplyCfm || '—'}</td>
-                <td>{row.coolingTotal || '—'}</td>
-                <td>{row.heatingInput || '—'}</td>
-                <td>{row.voltPh || '—'}</td>
-                <td>{row.mca || '—'}</td>
-                <td>{row.mocp || '—'}</td>
-                <td>{row.weight || '—'}</td>
-                <td>{row.remarks || '—'}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <p className="helper-text schedule-actions-list">
-        Rows marked with * are showing fallback selection codes because no database match was returned.
-      </p>
-    </div>
-  );
+  throw new Error(`Workbook not found in R2: ${sourceFilename}`);
 }
 
-function ImportSummary({ result }) {
-  if (!result?.ok) return null;
+async function handleUploadTemplate(request, env) {
+  const contentType = request.headers.get('Content-Type') || '';
+  if (!contentType.toLowerCase().includes('multipart/form-data')) {
+    return json({ error: 'Expected multipart/form-data upload.' }, 400);
+  }
 
-  const summary = result.summary || {};
-  const issues = Array.isArray(result.issues) ? result.issues : [];
+  const formData = await request.formData();
+  const file = formData.get('file');
 
-  return (
-    <div className="import-summary">
-      <div className="import-summary-grid">
-        <div className="import-stat">
-          <span className="meta-label">Batch</span>
-          <strong>#{result.batch?.id}</strong>
-        </div>
-        <div className="import-stat">
-          <span className="meta-label">Rows staged</span>
-          <strong>{summary.rows_staged ?? 0}</strong>
-        </div>
-        <div className="import-stat">
-          <span className="meta-label">Unique models</span>
-          <strong>{summary.unique_models_in_batch ?? 0}</strong>
-        </div>
-        <div className="import-stat">
-          <span className="meta-label">Inserted</span>
-          <strong>{summary.catalog_inserts ?? 0}</strong>
-        </div>
-        <div className="import-stat">
-          <span className="meta-label">Updated</span>
-          <strong>{summary.catalog_updates ?? 0}</strong>
-        </div>
-        <div className="import-stat">
-          <span className="meta-label">Unchanged</span>
-          <strong>{summary.catalog_unchanged ?? 0}</strong>
-        </div>
-      </div>
+  if (!file || typeof file === 'string') {
+    return json({ error: 'Missing file field.' }, 400);
+  }
 
-      {!!issues.length && (
-        <div className="import-issues">
-          <div className="meta-label">Issues</div>
-          <ul>
-            {issues.map((issue, index) => {
-              if (issue.type === 'duplicate_model_in_batch') {
-                return (
-                  <li key={index}>
-                    Duplicate model <code>{issue.model_number}</code> at rows {issue.source_row_numbers?.join(', ')}.
-                  </li>
-                );
-              }
+  const key = normalizeText(file.name) || `upload-${Date.now()}.xlsx`;
 
-              return <li key={index}>{issue.type}</li>;
-            })}
-          </ul>
-        </div>
-      )}
-    </div>
-  );
+  await env.TEMPLATES.put(key, file.stream(), {
+    httpMetadata: {
+      contentType: file.type || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    },
+  });
+
+  return json({ ok: true, key });
 }
 
-export default function App() {
-  const [scheduledUnits, setScheduledUnits] = useState([]);
-  const [previewRows, setPreviewRows] = useState([]);
-  const [editingIndex, setEditingIndex] = useState(null);
+async function insertBatch(env, payload) {
+  const result = await env.DB.prepare(`
+    INSERT INTO import_batches (source_filename, source_sheet, vendor, product_line, notes)
+    VALUES (?, ?, ?, ?, ?)
+  `)
+    .bind(
+      payload.source_filename,
+      payload.source_sheet || 'Schedule',
+      payload.vendor || null,
+      payload.product_line || null,
+      payload.notes || null,
+    )
+    .run();
 
-  const [formError, setFormError] = useState('');
-  const [exportError, setExportError] = useState('');
-  const [previewError, setPreviewError] = useState('');
-  const [isExporting, setIsExporting] = useState(false);
-  const [isResolvingPreview, setIsResolvingPreview] = useState(false);
+  return result.meta.last_row_id;
+}
 
-  const [importFile, setImportFile] = useState(null);
-  const [importVendor, setImportVendor] = useState('Tempmaster');
-  const [importProductLine, setImportProductLine] = useState('DS Commercial');
-  const [importNotes, setImportNotes] = useState('Imported from DS Commercial workbook');
-  const [importLoading, setImportLoading] = useState(false);
-  const [importResult, setImportResult] = useState(null);
-  const [importError, setImportError] = useState('');
+async function insertStagingRow(env, batchId, rowData) {
+  const result = await env.DB.prepare(`
+    INSERT INTO staging_schedule_rows (
+      batch_id, source_row_number, source_descriptor, raw_model_number, raw_brand, raw_qty,
+      raw_airflow_cfm, raw_supply_fan_hp, raw_supply_fan_esp_in_wg, raw_supply_fan_rpm,
+      raw_cooling_total_mbh, raw_cooling_sensible_mbh, raw_unit_eer, raw_seer_ieer,
+      raw_refrigerant, raw_heating_input_mbh, raw_heating_output_mbh, raw_voltage,
+      raw_mca, raw_mocp, raw_weight_lbs, raw_remarks,
+      family_key, family_label, efficiency_key, efficiency_label,
+      tonnage_key, tonnage_value, voltage_key, voltage_label,
+      aux_heat_type_key, aux_heat_type_label, aux_heat_capacity_key, aux_heat_capacity_label,
+      parse_status, parse_notes
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    batchId,
+    rowData.source_row_number,
+    rowData.source_descriptor,
+    rowData.raw_model_number,
+    rowData.raw_brand,
+    rowData.raw_qty,
+    rowData.raw_airflow_cfm,
+    rowData.raw_supply_fan_hp,
+    rowData.raw_supply_fan_esp_in_wg,
+    rowData.raw_supply_fan_rpm,
+    rowData.raw_cooling_total_mbh,
+    rowData.raw_cooling_sensible_mbh,
+    rowData.raw_unit_eer,
+    rowData.raw_seer_ieer,
+    rowData.raw_refrigerant,
+    rowData.raw_heating_input_mbh,
+    rowData.raw_heating_output_mbh,
+    rowData.raw_voltage,
+    rowData.raw_mca,
+    rowData.raw_mocp,
+    rowData.raw_weight_lbs,
+    rowData.raw_remarks,
+    rowData.family_key,
+    rowData.family_label,
+    rowData.efficiency_key,
+    rowData.efficiency_label,
+    rowData.tonnage_key,
+    rowData.tonnage_value,
+    rowData.voltage_key,
+    rowData.voltage_label,
+    rowData.aux_heat_type_key,
+    rowData.aux_heat_type_label,
+    rowData.aux_heat_capacity_key,
+    rowData.aux_heat_capacity_label,
+    rowData.parse_status,
+    rowData.parse_notes,
+  ).run();
 
-  const [selection, setSelection] = useState(makeInitialState());
-  const familyRule = FAMILY_RULES[selection.family];
+  return result.meta.last_row_id;
+}
 
-  const heatOptions = useMemo(() => {
-    if (selection.heatType === 'Electric Heat') return HEAT_BY_TONNAGE[selection.tonnage]?.electric ?? [];
-    if (selection.heatType === 'Aluminum Gas Heat') return HEAT_BY_TONNAGE[selection.tonnage]?.gas ?? [];
-    return [];
-  }, [selection.heatType, selection.tonnage]);
+async function insertImportModelResult(env, batchId, stagingRowId, modelNumber, unitModelId, action, reason = null) {
+  await env.DB.prepare(`
+    INSERT INTO import_model_results (batch_id, staging_row_id, model_number, unit_model_id, action, reason)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).bind(batchId, stagingRowId, modelNumber || null, unitModelId || null, action, reason).run();
+}
 
-  useEffect(() => {
-    if (!familyRule.efficiencies.includes(selection.efficiency)) {
-      setSelection((current) => ({ ...current, efficiency: familyRule.efficiencies[0] }));
-    }
-  }, [familyRule.efficiencies, selection.efficiency]);
+async function upsertUnitModelV2(env, batchId, stagedRow) {
+  const existing = await env.DB.prepare(`
+    SELECT * FROM unit_models_v2 WHERE model_number = ?
+  `).bind(stagedRow.raw_model_number).first();
 
-  useEffect(() => {
-    if (!familyRule.heatTypes.includes(selection.heatType)) {
-      setSelection((current) => ({
-        ...current,
-        heatType: familyRule.heatTypes[0],
-        heatCapacity: ''
-      }));
-      return;
-    }
+  if (!existing) {
+    const inserted = await env.DB.prepare(`
+      INSERT INTO unit_models_v2 (
+        model_number, family_key, family_label, tonnage_key, tonnage_value,
+        voltage_key, voltage_label, aux_heat_type_key, aux_heat_type_label,
+        aux_heat_capacity_key, aux_heat_capacity_label, source_batch_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      stagedRow.raw_model_number,
+      stagedRow.family_key,
+      stagedRow.family_label,
+      stagedRow.tonnage_key,
+      stagedRow.tonnage_value,
+      stagedRow.voltage_key,
+      stagedRow.voltage_label,
+      stagedRow.aux_heat_type_key,
+      stagedRow.aux_heat_type_label,
+      stagedRow.aux_heat_capacity_key,
+      stagedRow.aux_heat_capacity_label,
+      batchId,
+    ).run();
 
-    if (selection.heatType === 'None' && selection.heatCapacity !== '') {
-      setSelection((current) => ({ ...current, heatCapacity: '' }));
-      return;
-    }
-
-    if (selection.heatType !== 'None' && heatOptions.length > 0 && !heatOptions.includes(selection.heatCapacity)) {
-      setSelection((current) => ({ ...current, heatCapacity: heatOptions[0] }));
-    }
-  }, [familyRule.heatTypes, heatOptions, selection.heatCapacity, selection.heatType]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function resolvePreview() {
-      if (!scheduledUnits.length) {
-        setPreviewRows([]);
-        setPreviewError('');
-        return;
-      }
-
-      setIsResolvingPreview(true);
-      setPreviewError('');
-
-      try {
-        const response = await fetch('/api/preview-schedule', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ units: scheduledUnits })
-        });
-
-        if (!response.ok) {
-          const text = await response.text();
-          throw new Error(text || 'Unable to resolve preview schedule.');
-        }
-
-        const data = await response.json();
-        if (!cancelled) {
-          setPreviewRows(Array.isArray(data?.rows) ? data.rows : []);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setPreviewError(error.message || 'Unable to resolve preview schedule.');
-          setPreviewRows(scheduledUnits.map(previewFallback));
-        }
-      } finally {
-        if (!cancelled) {
-          setIsResolvingPreview(false);
-        }
-      }
-    }
-
-    resolvePreview();
-    return () => {
-      cancelled = true;
-    };
-  }, [scheduledUnits]);
-
-  const selectedOptionLabels = optionSummary(selection);
-  const selectionCode = useMemo(() => buildSelectionCode(selection), [selection]);
-  const currentResolvedRow = editingIndex !== null ? previewRows[editingIndex] : null;
-  const currentCutsheetHref =
-    currentResolvedRow?.cutsheetUrl || `https://selections.hhtrecho.com/cutsheets/${slugify(selectionCode)}.pdf`;
-
-  function updateField(field, value) {
-    setSelection((current) => ({ ...current, [field]: value }));
+    return { action: 'inserted', unitModelId: inserted.meta.last_row_id };
   }
 
-  function resetForm(nextTag = nextDefaultTag(scheduledUnits)) {
-    setSelection(makeInitialState(nextTag));
-    setEditingIndex(null);
-    setFormError('');
+  const changed = [
+    existing.family_key !== stagedRow.family_key,
+    String(existing.tonnage_key || '') !== String(stagedRow.tonnage_key || ''),
+    String(existing.voltage_key || '') !== String(stagedRow.voltage_key || ''),
+    String(existing.aux_heat_type_key || '') !== String(stagedRow.aux_heat_type_key || ''),
+    String(existing.aux_heat_capacity_key || '') !== String(stagedRow.aux_heat_capacity_key || ''),
+  ].some(Boolean);
+
+  if (!changed) {
+    return { action: 'unchanged', unitModelId: existing.id };
   }
 
-  function saveUnit() {
-    const tag = selection.tag.trim();
-    if (!tag) {
-      setFormError('Tag is required.');
-      return;
-    }
+  await env.DB.prepare(`
+    UPDATE unit_models_v2
+    SET family_key = ?, family_label = ?, tonnage_key = ?, tonnage_value = ?,
+        voltage_key = ?, voltage_label = ?, aux_heat_type_key = ?, aux_heat_type_label = ?,
+        aux_heat_capacity_key = ?, aux_heat_capacity_label = ?, source_batch_id = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).bind(
+    stagedRow.family_key,
+    stagedRow.family_label,
+    stagedRow.tonnage_key,
+    stagedRow.tonnage_value,
+    stagedRow.voltage_key,
+    stagedRow.voltage_label,
+    stagedRow.aux_heat_type_key,
+    stagedRow.aux_heat_type_label,
+    stagedRow.aux_heat_capacity_key,
+    stagedRow.aux_heat_capacity_label,
+    batchId,
+    existing.id,
+  ).run();
 
-    const duplicate = scheduledUnits.some(
-      (unit, index) => unit.tag.trim().toLowerCase() === tag.toLowerCase() && index !== editingIndex
-    );
+  return { action: 'updated', unitModelId: existing.id };
+}
 
-    if (duplicate) {
-      setFormError('Tag must be unique within the schedule.');
-      return;
-    }
+async function stageDsCommercialWorkbook(env, payload) {
+  const workbook = await loadWorkbookFromSource(env, payload.source_filename);
+  const worksheet = workbook.getWorksheet(payload.source_sheet || 'Schedule');
+  if (!worksheet) throw new Error(`Worksheet not found: ${payload.source_sheet || 'Schedule'}`);
 
-    setFormError('');
+  const batchId = await insertBatch(env, payload);
+  const stagedRows = [];
 
-    if (editingIndex === null) {
-      const nextUnits = [...scheduledUnits, { ...selection, tag }];
-      setScheduledUnits(nextUnits);
-      resetForm(nextDefaultTag(nextUnits));
-    } else {
-      setScheduledUnits((current) =>
-        current.map((unit, index) => (index === editingIndex ? { ...selection, tag } : unit))
+  worksheet.eachRow((row, rowNumber) => {
+    const descriptor = getCellValue(row, 1);
+    const modelNumber = getCellValue(row, 2);
+    const brand = getCellValue(row, 3);
+    const qty = getCellValue(row, 4);
+
+    if (!descriptor || descriptor.toLowerCase() === 'tag #' || modelNumber.toLowerCase() === 'model number') return;
+    if (!/^\d+(?:\.\d+)?-?ton/i.test(descriptor.replace(/\s+/g, ''))) return;
+    if (!modelNumber) return;
+
+    stagedRows.push({
+      source_row_number: rowNumber,
+      source_descriptor: descriptor,
+      raw_model_number: modelNumber,
+      raw_brand: brand,
+      raw_qty: qty,
+      raw_airflow_cfm: getCellValue(row, 5),
+      raw_supply_fan_hp: getCellValue(row, 7),
+      raw_supply_fan_esp_in_wg: getCellValue(row, 8),
+      raw_supply_fan_rpm: getCellValue(row, 9),
+      raw_cooling_total_mbh: getCellValue(row, 16),
+      raw_cooling_sensible_mbh: getCellValue(row, 17),
+      raw_unit_eer: getCellValue(row, 18),
+      raw_seer_ieer: getCellValue(row, 19),
+      raw_refrigerant: getCellValue(row, 20),
+      raw_heating_input_mbh: getCellValue(row, 22),
+      raw_heating_output_mbh: getCellValue(row, 23),
+      raw_voltage: getCellValue(row, 24),
+      raw_mca: getCellValue(row, 25),
+      raw_mocp: getCellValue(row, 26),
+      raw_weight_lbs: getCellValue(row, 28),
+      raw_remarks: getCellValue(row, 29),
+      ...parseDescriptor(descriptor),
+      parse_status: 'parsed',
+      parse_notes: null,
+    });
+  });
+
+  const duplicateCounts = new Map();
+  for (const row of stagedRows) {
+    duplicateCounts.set(row.raw_model_number, (duplicateCounts.get(row.raw_model_number) || 0) + 1);
+  }
+
+  const seenModels = new Set();
+
+  for (const row of stagedRows) {
+    const stagingRowId = await insertStagingRow(env, batchId, row);
+    row.id = stagingRowId;
+
+    const occurrences = duplicateCounts.get(row.raw_model_number) || 0;
+    if (occurrences > 1 && seenModels.has(row.raw_model_number)) {
+      await insertImportModelResult(
+        env,
+        batchId,
+        stagingRowId,
+        row.raw_model_number,
+        null,
+        'duplicate_in_batch',
+        'Duplicate model number within import batch'
       );
-      resetForm();
+      continue;
     }
+
+    seenModels.add(row.raw_model_number);
+    const upsert = await upsertUnitModelV2(env, batchId, row);
+    await insertImportModelResult(env, batchId, stagingRowId, row.raw_model_number, upsert.unitModelId, upsert.action, null);
   }
 
-  function editUnit(index) {
-    setSelection({ ...scheduledUnits[index] });
-    setEditingIndex(index);
-    setFormError('');
-  }
-
-  function duplicateUnit(index) {
-    const source = scheduledUnits[index];
-    setSelection({ ...source, tag: nextDefaultTag(scheduledUnits) });
-    setEditingIndex(null);
-    setFormError('');
-  }
-
-  function removeUnit(index) {
-    const nextUnits = scheduledUnits.filter((_, i) => i !== index);
-    setScheduledUnits(nextUnits);
-    if (editingIndex === index) resetForm(nextDefaultTag(nextUnits));
-  }
-
-  async function exportWorkbook() {
-    if (!scheduledUnits.length) return;
-
-    setIsExporting(true);
-    setExportError('');
-
-    try {
-      const response = await fetch('/api/export-schedule', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ units: scheduledUnits })
-      });
-
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(text || 'Export failed');
-      }
-
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'SSR-Schedule-Export.xlsx';
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      setExportError(error.message || 'Unable to export workbook.');
-    } finally {
-      setIsExporting(false);
-    }
-  }
-
-  async function handleImportSchedule() {
-    try {
-      setImportError('');
-      setImportResult(null);
-
-      if (!importFile) {
-        setImportError('Choose a workbook file first.');
-        return;
-      }
-
-      setImportLoading(true);
-
-      const uploadForm = new FormData();
-      uploadForm.append('file', importFile);
-
-      const uploadRes = await fetch('/api/upload-template', {
-        method: 'POST',
-        body: uploadForm
-      });
-
-      const uploadJson = await uploadRes.json().catch(() => ({}));
-      if (!uploadRes.ok || !uploadJson?.ok) {
-        throw new Error(uploadJson.error || 'Upload failed');
-      }
-
-      const importRes = await fetch('/api/import-schedule', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          source_filename: uploadJson.key,
-          source_sheet: 'Schedule',
-          vendor: importVendor || undefined,
-          product_line: importProductLine || undefined,
-          notes: importNotes || undefined
-        })
-      });
-
-      const importJson = await importRes.json().catch(() => ({}));
-      if (!importRes.ok || !importJson?.ok) {
-        throw new Error(importJson.error || 'Import failed');
-      }
-
-      setImportResult(importJson);
-    } catch (error) {
-      setImportError(error.message || 'Import failed');
-    } finally {
-      setImportLoading(false);
-    }
-  }
-
-  return (
-    <div className="app-shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">H&amp;H Trecho</p>
-          <h1>Quick Select Schedule Builder</h1>
-          <p className="intro-copy">
-            Create one unit at a time, build the project schedule, preview matched catalog rows, export the workbook,
-            and now import source schedule workbooks directly into the catalog flow.
-          </p>
-        </div>
-        <div className="topbar-actions">
-          <div className="domain-pill">{scheduledUnits.length} unit{scheduledUnits.length === 1 ? '' : 's'} in schedule.</div>
-        </div>
-      </header>
-
-      <main className="workspace multi-layout">
-        <section className="panel selector-panel">
-          <div className="panel-header">
-            <div>
-              <h2>{editingIndex === null ? 'Add unit' : 'Edit unit'}</h2>
-              <p>Configure the selection and add it to the schedule.</p>
-            </div>
-          </div>
-
-          <div className="form-grid">
-            <label className="form-field">
-              <span className="meta-label">Tag</span>
-              <input value={selection.tag} onChange={(e) => updateField('tag', e.target.value)} />
-            </label>
-
-            <label className="form-field">
-              <span className="meta-label">Area served</span>
-              <input value={selection.areaServed} onChange={(e) => updateField('areaServed', e.target.value)} />
-            </label>
-
-            <label className="form-field">
-              <span className="meta-label">Family</span>
-              <select value={selection.family} onChange={(e) => updateField('family', e.target.value)}>
-                {PRODUCT_FAMILIES.map((value) => (
-                  <option key={value} value={value}>{value}</option>
-                ))}
-              </select>
-            </label>
-
-            <label className="form-field">
-              <span className="meta-label">Efficiency</span>
-              <select value={selection.efficiency} onChange={(e) => updateField('efficiency', e.target.value)}>
-                {familyRule.efficiencies.map((value) => (
-                  <option key={value} value={value}>{value}</option>
-                ))}
-              </select>
-            </label>
-
-            <label className="form-field">
-              <span className="meta-label">Tonnage</span>
-              <select value={selection.tonnage} onChange={(e) => updateField('tonnage', Number(e.target.value))}>
-                {TONNAGES.map((value) => (
-                  <option key={value} value={value}>{value}</option>
-                ))}
-              </select>
-            </label>
-
-            <label className="form-field">
-              <span className="meta-label">Voltage</span>
-              <select value={selection.voltage} onChange={(e) => updateField('voltage', e.target.value)}>
-                {VOLTAGES.map((value) => (
-                  <option key={value} value={value}>{formatVoltageDisplay(value)}</option>
-                ))}
-              </select>
-            </label>
-
-            <label className="form-field">
-              <span className="meta-label">Heat type</span>
-              <select value={selection.heatType} onChange={(e) => updateField('heatType', e.target.value)}>
-                {familyRule.heatTypes.map((value) => (
-                  <option key={value} value={value}>{value}</option>
-                ))}
-              </select>
-            </label>
-
-            <label className="form-field">
-              <span className="meta-label">Heat capacity</span>
-              <select
-                value={selection.heatCapacity}
-                onChange={(e) => updateField('heatCapacity', e.target.value)}
-                disabled={selection.heatType === 'None'}
-              >
-                <option value="">{selection.heatType === 'None' ? 'No heat selected' : 'Select heat size'}</option>
-                {heatOptions.map((value) => (
-                  <option key={value} value={value}>{value}</option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          <div className="option-section">
-            <div className="meta-label">Options</div>
-            <div className="chip-grid">
-              <button
-                type="button"
-                className={`chip ${selection.hotGasReheat ? 'chip-active' : ''}`}
-                onClick={() => updateField('hotGasReheat', !selection.hotGasReheat)}
-              >
-                Hot Gas Reheat
-              </button>
-              <button
-                type="button"
-                className={`chip ${selection.economizer === 'barometric' ? 'chip-active' : ''}`}
-                onClick={() => updateField('economizer', selection.economizer === 'barometric' ? 'none' : 'barometric')}
-              >
-                Economizer / Barometric
-              </button>
-              <button
-                type="button"
-                className={`chip ${selection.economizer === 'powered' ? 'chip-active' : ''}`}
-                onClick={() => updateField('economizer', selection.economizer === 'powered' ? 'none' : 'powered')}
-              >
-                Economizer / Powered Exhaust
-              </button>
-            </div>
-          </div>
-
-          <label className="form-field notes-field">
-            <span className="meta-label">Remarks</span>
-            <textarea rows="3" value={selection.remarks} onChange={(e) => updateField('remarks', e.target.value)} />
-          </label>
-
-          <div className="logic-card">
-            <div className="meta-label">Selection code</div>
-            <strong>{selectionCode}</strong>
-            {!!selectedOptionLabels.length && (
-              <ul>
-                {selectedOptionLabels.map((item) => <li key={item}>{item}</li>)}
-              </ul>
-            )}
-          </div>
-
-          {formError && <div className="error-banner">{formError}</div>}
-
-          <div className="builder-actions">
-            <button type="button" className="primary-btn" onClick={saveUnit}>
-              {editingIndex === null ? 'Add to schedule' : 'Save unit'}
-            </button>
-            <button type="button" className="secondary-btn" onClick={() => resetForm()}>
-              Reset form
-            </button>
-            <a className="secondary-btn link-btn" href={currentCutsheetHref} target="_blank" rel="noopener noreferrer">
-              Cutsheet
-            </a>
-          </div>
-
-          <div className="import-panel">
-            <div className="panel-header">
-              <div>
-                <h2>Schedule import</h2>
-                <p>Upload a workbook to R2 and run the DS Commercial importer from the app.</p>
-              </div>
-            </div>
-
-            <div className="form-grid">
-              <label className="form-field">
-                <span className="meta-label">Workbook (.xlsx)</span>
-                <input
-                  type="file"
-                  accept=".xlsx"
-                  onChange={(e) => setImportFile(e.target.files?.[0] || null)}
-                />
-              </label>
-
-              <label className="form-field">
-                <span className="meta-label">Vendor</span>
-                <input value={importVendor} onChange={(e) => setImportVendor(e.target.value)} />
-              </label>
-
-              <label className="form-field">
-                <span className="meta-label">Product line</span>
-                <input value={importProductLine} onChange={(e) => setImportProductLine(e.target.value)} />
-              </label>
-
-              <label className="form-field">
-                <span className="meta-label">Notes</span>
-                <input value={importNotes} onChange={(e) => setImportNotes(e.target.value)} />
-              </label>
-            </div>
-
-            {importError && <div className="error-banner">{importError}</div>}
-
-            <div className="builder-actions">
-              <button
-                type="button"
-                className="primary-btn"
-                disabled={importLoading || !importFile}
-                onClick={handleImportSchedule}
-              >
-                {importLoading ? 'Uploading + importing…' : 'Import workbook'}
-              </button>
-            </div>
-
-            <ImportSummary result={importResult} />
-          </div>
-        </section>
-
-        <section className="panel output-panel">
-          <div className="panel-header">
-            <div>
-              <h2>Schedule preview</h2>
-              <p>Preview resolved equipment rows before exporting the SSR workbook.</p>
-            </div>
-            <div className="topbar-actions">
-              <button
-                type="button"
-                className="primary-btn"
-                onClick={exportWorkbook}
-                disabled={!scheduledUnits.length || isExporting}
-              >
-                {isExporting ? 'Exporting…' : 'Export workbook'}
-              </button>
-            </div>
-          </div>
-
-          {previewError && <div className="error-banner">{previewError}</div>}
-          {exportError && <div className="error-banner">{exportError}</div>}
-          {isResolvingPreview && <p className="helper-text">Resolving live preview…</p>}
-
-          <SchedulePreviewTable rows={previewRows} />
-
-          <div className="unit-list">
-            {scheduledUnits.length === 0 ? (
-              <div className="empty-state">No units added yet. Start by creating your first RTU selection.</div>
-            ) : (
-              scheduledUnits.map((unit, index) => {
-                const row = previewRows[index] || previewFallback(unit);
-                const statusText = row.matchFound
-                  ? `Matched model ${row.modelNumber}.`
-                  : 'Using generated selection code because no model match was returned.';
-
-                return (
-                  <article key={`${unit.tag}-${index}`} className="unit-card unit-card-compact">
-                    <div className="unit-card-top">
-                      <div>
-                        <strong>{unit.tag}</strong>
-                        <p>{unit.areaServed || 'Area not specified'}</p>
-                      </div>
-                      <span className="tag-pill">{unit.family}</span>
-                    </div>
-
-                    <div className="unit-meta-grid">
-                      <div><span className="meta-label">Model</span><div>{row.modelNumber}</div></div>
-                      <div><span className="meta-label">Tons</span><div>{row.nominalTons || unit.tonnage}</div></div>
-                      <div><span className="meta-label">Voltage</span><div>{row.voltPh || unit.voltage}</div></div>
-                      <div><span className="meta-label">Heat</span><div>{unit.heatType === 'None' ? 'No heat' : `${unit.heatType} ${unit.heatCapacity}`}</div></div>
-                    </div>
-
-                    <p className="unit-status">{statusText}</p>
-
-                    <div className="unit-actions">
-                      <button type="button" className="secondary-btn" onClick={() => editUnit(index)}>Edit</button>
-                      <button type="button" className="secondary-btn" onClick={() => duplicateUnit(index)}>Duplicate</button>
-                      <button type="button" className="secondary-btn danger-btn" onClick={() => removeUnit(index)}>Remove</button>
-                    </div>
-                  </article>
-                );
-              })
-            )}
-          </div>
-        </section>
-      </main>
-    </div>
-  );
+  return batchId;
 }
+
+async function getBatch(env, batchId) {
+  const result = await env.DB.prepare(`SELECT * FROM import_batches WHERE id = ?`).bind(batchId).first();
+  return result || null;
+}
+
+async function getBatchSummary(env, batchId) {
+  const totals = await env.DB.prepare(`
+    SELECT
+      COUNT(*) AS rows_staged,
+      SUM(CASE WHEN parse_status = 'parsed' THEN 1 ELSE 0 END) AS rows_parsed,
+      SUM(CASE WHEN parse_status != 'parsed' THEN 1 ELSE 0 END) AS rows_failed,
+      SUM(CASE WHEN TRIM(COALESCE(parse_notes, '')) != '' THEN 1 ELSE 0 END) AS rows_with_warnings,
+      COUNT(DISTINCT NULLIF(TRIM(raw_model_number), '')) AS unique_models_in_batch
+    FROM staging_schedule_rows
+    WHERE batch_id = ?
+  `).bind(batchId).first();
+
+  const actions = await env.DB.prepare(`
+    SELECT
+      COALESCE(SUM(CASE WHEN action = 'inserted' THEN 1 ELSE 0 END), 0) AS catalog_inserts,
+      COALESCE(SUM(CASE WHEN action = 'updated' THEN 1 ELSE 0 END), 0) AS catalog_updates,
+      COALESCE(SUM(CASE WHEN action = 'unchanged' THEN 1 ELSE 0 END), 0) AS catalog_unchanged,
+      COALESCE(SUM(CASE WHEN action = 'duplicate_in_batch' THEN 1 ELSE 0 END), 0) AS duplicates_in_batch
+    FROM import_model_results
+    WHERE batch_id = ?
+  `).bind(batchId).first();
+
+  return {
+    rows_read: toInt(totals?.rows_staged),
+    rows_staged: toInt(totals?.rows_staged),
+    rows_parsed: toInt(totals?.rows_parsed),
+    rows_failed: toInt(totals?.rows_failed),
+    rows_with_warnings: toInt(totals?.rows_with_warnings),
+    unique_models_in_batch: toInt(totals?.unique_models_in_batch),
+    catalog_inserts: toInt(actions?.catalog_inserts),
+    catalog_updates: toInt(actions?.catalog_updates),
+    catalog_unchanged: toInt(actions?.catalog_unchanged),
+    duplicates_in_batch: toInt(actions?.duplicates_in_batch),
+  };
+}
+
+function summarizeIssueRows(rows) {
+  return rows.map((row) => ({
+    source_row_number: row.source_row_number,
+    model_number: row.raw_model_number,
+    parse_status: row.parse_status,
+    parse_notes: cleanBlank(row.parse_notes),
+  }));
+}
+
+async function getBatchIssues(env, batchId) {
+  const duplicates = await env.DB.prepare(`
+    SELECT
+      raw_model_number AS model_number,
+      COUNT(*) AS duplicate_count,
+      GROUP_CONCAT(source_row_number) AS source_row_numbers
+    FROM staging_schedule_rows
+    WHERE batch_id = ? AND NULLIF(TRIM(raw_model_number), '') IS NOT NULL
+    GROUP BY raw_model_number
+    HAVING COUNT(*) > 1
+    ORDER BY duplicate_count DESC, raw_model_number
+  `).bind(batchId).all();
+
+  const parseIssues = await env.DB.prepare(`
+    SELECT source_row_number, raw_model_number, parse_status, parse_notes
+    FROM staging_schedule_rows
+    WHERE batch_id = ?
+      AND (parse_status != 'parsed' OR TRIM(COALESCE(parse_notes, '')) != '')
+    ORDER BY source_row_number
+  `).bind(batchId).all();
+
+  const issues = [];
+  for (const row of coerceArray(duplicates.results)) {
+    issues.push({
+      type: 'duplicate_model_in_batch',
+      model_number: row.model_number,
+      count: toInt(row.duplicate_count),
+      source_row_numbers: String(row.source_row_numbers || '')
+        .split(',')
+        .map((value) => toInt(value))
+        .filter(Boolean),
+    });
+  }
+
+  const warningRows = summarizeIssueRows(coerceArray(parseIssues.results));
+  if (warningRows.length) {
+    issues.push({ type: 'parse_warnings', rows: warningRows });
+  }
+
+  return issues;
+}
+
+function buildBatchLinks(batchId) {
+  return {
+    batch: `/api/import-batches/${batchId}`,
+    staging_rows: `/api/import-batches/${batchId}/staging-rows`,
+    catalog_results: `/api/import-batches/${batchId}/catalog-results`,
+  };
+}
+
+async function handleGetImportBatch(env, batchId) {
+  const batch = await getBatch(env, batchId);
+  if (!batch) return json({ error: 'Import batch not found.' }, 404);
+  const summary = await getBatchSummary(env, batchId);
+  const issues = await getBatchIssues(env, batchId);
+  return json({ ok: true, batch, summary, issues, links: buildBatchLinks(batchId) });
+}
+
+async function handleGetImportBatchRows(env, batchId) {
+  const batch = await getBatch(env, batchId);
+  if (!batch) return json({ error: 'Import batch not found.' }, 404);
+  const rows = await env.DB.prepare(`
+    SELECT *
+    FROM staging_schedule_rows
+    WHERE batch_id = ?
+    ORDER BY source_row_number, id
+  `).bind(batchId).all();
+  return json({ ok: true, batch, rows: coerceArray(rows.results) });
+}
+
+async function handleGetImportBatchCatalogResults(env, batchId) {
+  const batch = await getBatch(env, batchId);
+  if (!batch) return json({ error: 'Import batch not found.' }, 404);
+  const rows = await env.DB.prepare(`
+    SELECT
+      imr.id,
+      imr.batch_id,
+      imr.staging_row_id,
+      ssr.source_row_number,
+      ssr.source_descriptor,
+      ssr.raw_model_number,
+      imr.model_number,
+      imr.unit_model_id,
+      imr.action,
+      imr.reason,
+      um.family_key,
+      um.tonnage_key,
+      um.voltage_key,
+      um.aux_heat_type_key,
+      um.aux_heat_capacity_key,
+      imr.created_at
+    FROM import_model_results imr
+    JOIN staging_schedule_rows ssr ON ssr.id = imr.staging_row_id
+    LEFT JOIN unit_models_v2 um ON um.id = imr.unit_model_id
+    WHERE imr.batch_id = ?
+    ORDER BY ssr.source_row_number, imr.id
+  `).bind(batchId).all();
+  return json({ ok: true, batch, results: coerceArray(rows.results) });
+}
+
+async function listCatalog(env, filters = {}) {
+  let sql = `
+    SELECT m.*, d.cut_sheet_url, d.accessories_url, d.wiring_url, d.iom_url
+    FROM unit_models m
+    LEFT JOIN unit_documents d ON d.model_id = m.id
+    WHERE 1 = 1
+  `;
+  const binds = [];
+
+  if (filters.family) {
+    sql += ' AND m.family = ?';
+    binds.push(filters.family);
+  }
+  if (filters.efficiency) {
+    sql += ' AND m.efficiency = ?';
+    binds.push(filters.efficiency);
+  }
+  if (filters.tonnage !== '' && filters.tonnage !== null && filters.tonnage !== undefined) {
+    sql += ' AND m.tonnage = ?';
+    binds.push(filters.tonnage);
+  }
+  if (filters.voltage) {
+    sql += ' AND m.voltage = ?';
+    binds.push(filters.voltage);
+  }
+  if (filters.heatType) {
+    sql += ' AND m.heat_type = ?';
+    binds.push(filters.heatType);
+  }
+  if (filters.heatCapacity && normalizeHeatType(filters.heatType) !== 'none') {
+    sql += ' AND m.heat_capacity = ?';
+    binds.push(filters.heatCapacity);
+  }
+
+  sql += ' ORDER BY m.model_number';
+  const stmt = env.DB.prepare(sql).bind(...binds);
+  const result = await stmt.all();
+  return result.results || [];
+}
+
+async function findMatchingModel(env, unit) {
+  const matches = await listCatalog(env, {
+    family: normalizeFamily(unit.family),
+    efficiency: normalizeEfficiency(unit.efficiency),
+    tonnage: unit.tonnage,
+    voltage: normalizeVoltage(unit.voltage),
+    heatType: normalizeHeatType(unit.heatType),
+    heatCapacity: normalizeHeatCapacity(unit.heatCapacity),
+  });
+  return matches[0] || null;
+}
+
+function buildResolvedScheduleRow(unit, match, index = 0) {
+  return {
+    tag: normalizeText(unit.tag) || `RTU-${index + 1}`,
+    areaServed: asBlank(unit.areaServed),
+    manufacturer: asBlank(match?.brand || 'Tempmaster'),
+    modelNumber: asBlank(match?.model_number || buildSelectionCode(unit)),
+    nominalTons: asBlank(match?.tonnage || unit.tonnage),
+    unitType: asBlank(match?.unit_type || unit.family),
+    unitEer: asBlank(match?.unit_eer),
+    seerIeerr: asBlank(match?.seer_ieer),
+    supplyCfm: asBlank(match?.cooling_cfm),
+    supplyEsp: '',
+    supplyQty: 1,
+    supplyBhp: '',
+    supplyHp: '',
+    supplyRpm: '',
+    coolingEat: joinSlash(match?.cooling_eat_db, match?.cooling_eat_wb),
+    coolingLat: joinSlash(match?.cooling_lat_db, match?.cooling_lat_wb),
+    coolingSensible: asBlank(match?.cooling_sensible_capacity_mbh),
+    coolingTotal: asBlank(match?.cooling_total_capacity_mbh),
+    heatingCfm: asBlank(match?.heating_cfm || match?.cooling_cfm),
+    heatingEat: asBlank(match?.heating_eat_f),
+    heatingLat: asBlank(match?.heating_lat_f),
+    heatingInput: asBlank(match?.heating_capacity_mbtu || unit.heatCapacity),
+    heatingOutput: asBlank(match?.heating_output_capacity || ''),
+    voltPh: asBlank(match?.voltage || unit.voltage),
+    mca: asBlank(match?.mca),
+    mocp: asBlank(match?.mocp),
+    weight: asBlank(match?.operating_weight_lbs),
+    remarks: optionSummary(unit, match),
+    selectionCode: buildSelectionCode(unit),
+    matchFound: Boolean(match),
+    cutSheetUrl: asBlank(match?.cut_sheet_url),
+    accessoriesUrl: asBlank(match?.accessories_url),
+    wiringUrl: asBlank(match?.wiring_url),
+    iomUrl: asBlank(match?.iom_url),
+  };
+}
+
+async function resolveScheduleRows(env, units) {
+  const rows = [];
+  for (let index = 0; index < units.length; index += 1) {
+    const unit = units[index];
+    const match = await findMatchingModel(env, unit);
+    rows.push(buildResolvedScheduleRow(unit, match, index));
+  }
+  return rows;
+}
+
+const COL = {
+  tag: 2,
+  areaServed: 3,
+  manufacturer: 4,
+  modelNumber: 5,
+  nominalTons: 6,
+  unitType: 7,
+  unitEer: 8,
+  seerIeerr: 9,
+  supplyCfm: 10,
+  supplyEsp: 11,
+  supplyQty: 12,
+  supplyBhp: 13,
+  supplyHp: 14,
+  supplyRpm: 15,
+  coolingEat: 16,
+  coolingLat: 17,
+  coolingSensible: 18,
+  coolingTotal: 19,
+  heatingCfm: 20,
+  heatingEat: 21,
+  heatingLat: 22,
+  heatingInput: 23,
+  heatingOutput: 24,
+  voltPh: 25,
+  mca: 26,
+  mocp: 27,
+  weight: 28,
+  remarks: 29,
+};
+
+async function getTemplateWorkbook(env) {
+  const object = await env.TEMPLATES.get('SSR-Schedule-Example.xlsx');
+  if (!object) throw new Error('Template workbook not found in R2 bucket.');
+  const arrayBuffer = await object.arrayBuffer();
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(arrayBuffer);
+  return workbook;
+}
+
+async function createWorkbook(env, units) {
+  const workbook = await getTemplateWorkbook(env);
+  const worksheet = workbook.getWorksheet('Table 1') || workbook.worksheets[0];
+  const templateRowNumber = 4;
+  const baseRow = worksheet.getRow(templateRowNumber);
+  const rows = await resolveScheduleRows(env, units);
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const scheduleRow = rows[index];
+    const rowNumber = templateRowNumber + index;
+    if (rowNumber > templateRowNumber) worksheet.duplicateRow(templateRowNumber, 1, true);
+    const row = worksheet.getRow(rowNumber);
+    row.height = baseRow.height;
+
+    row.getCell(COL.tag).value = scheduleRow.tag;
+    row.getCell(COL.areaServed).value = scheduleRow.areaServed;
+    row.getCell(COL.manufacturer).value = scheduleRow.manufacturer;
+    row.getCell(COL.modelNumber).value = scheduleRow.modelNumber;
+    row.getCell(COL.nominalTons).value = scheduleRow.nominalTons;
+    row.getCell(COL.unitType).value = scheduleRow.unitType;
+    row.getCell(COL.unitEer).value = scheduleRow.unitEer;
+    row.getCell(COL.seerIeerr).value = scheduleRow.seerIeerr;
+    row.getCell(COL.supplyCfm).value = scheduleRow.supplyCfm;
+    row.getCell(COL.supplyEsp).value = scheduleRow.supplyEsp;
+    row.getCell(COL.supplyQty).value = scheduleRow.supplyQty;
+    row.getCell(COL.supplyBhp).value = scheduleRow.supplyBhp;
+    row.getCell(COL.supplyHp).value = scheduleRow.supplyHp;
+    row.getCell(COL.supplyRpm).value = scheduleRow.supplyRpm;
+    row.getCell(COL.coolingEat).value = scheduleRow.coolingEat;
+    row.getCell(COL.coolingLat).value = scheduleRow.coolingLat;
+    row.getCell(COL.coolingSensible).value = scheduleRow.coolingSensible;
+    row.getCell(COL.coolingTotal).value = scheduleRow.coolingTotal;
+    row.getCell(COL.heatingCfm).value = scheduleRow.heatingCfm;
+    row.getCell(COL.heatingEat).value = scheduleRow.heatingEat;
+    row.getCell(COL.heatingLat).value = scheduleRow.heatingLat;
+    row.getCell(COL.heatingInput).value = scheduleRow.heatingInput;
+    row.getCell(COL.heatingOutput).value = scheduleRow.heatingOutput;
+    row.getCell(COL.voltPh).value = scheduleRow.voltPh;
+    row.getCell(COL.mca).value = scheduleRow.mca;
+    row.getCell(COL.mocp).value = scheduleRow.mocp;
+    row.getCell(COL.weight).value = scheduleRow.weight;
+    row.getCell(COL.remarks).value = scheduleRow.remarks;
+    row.commit();
+  }
+
+  return workbook.xlsx.writeBuffer();
+}
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+
+    if (request.method === 'GET' && url.pathname === '/api/catalog') {
+      const filters = {
+        family: normalizeFamily(url.searchParams.get('family')),
+        efficiency: normalizeEfficiency(url.searchParams.get('efficiency')),
+        tonnage: url.searchParams.get('tonnage'),
+        voltage: normalizeVoltage(url.searchParams.get('voltage')),
+        heatType: normalizeHeatType(url.searchParams.get('heatType')),
+        heatCapacity: normalizeHeatCapacity(url.searchParams.get('heatCapacity')),
+      };
+      const results = await listCatalog(env, filters);
+      return json({ items: results });
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/upload-template') {
+      try {
+        return await handleUploadTemplate(request, env);
+      } catch (error) {
+        return json({ error: error.message || 'Upload failed.' }, 500);
+      }
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/import-schedule') {
+      try {
+        const payload = await request.json();
+        if (!payload?.source_filename) {
+          return json({ error: 'source_filename is required.' }, 400);
+        }
+        const batchId = await stageDsCommercialWorkbook(env, payload);
+        const batch = await getBatch(env, batchId);
+        const summary = await getBatchSummary(env, batchId);
+        const issues = await getBatchIssues(env, batchId);
+        return json({ ok: true, batch, summary, issues, links: buildBatchLinks(batchId) });
+      } catch (error) {
+        return json({ error: error.message || 'Import failed.' }, 500);
+      }
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/preview-schedule') {
+      try {
+        const payload = await request.json();
+        const units = Array.isArray(payload?.units) ? payload.units : [];
+        const rows = await resolveScheduleRows(env, units);
+        return json({ rows });
+      } catch (error) {
+        return new Response(error.message || 'Preview failed', { status: 500 });
+      }
+    }
+
+    const batchMatch = url.pathname.match(/^\/api\/import-batches\/(\d+)$/);
+    if (request.method === 'GET' && batchMatch) {
+      return handleGetImportBatch(env, Number(batchMatch[1]));
+    }
+
+    const batchRowsMatch = url.pathname.match(/^\/api\/import-batches\/(\d+)\/staging-rows$/);
+    if (request.method === 'GET' && batchRowsMatch) {
+      return handleGetImportBatchRows(env, Number(batchRowsMatch[1]));
+    }
+
+    const batchCatalogMatch = url.pathname.match(/^\/api\/import-batches\/(\d+)\/catalog-results$/);
+    if (request.method === 'GET' && batchCatalogMatch) {
+      return handleGetImportBatchCatalogResults(env, Number(batchCatalogMatch[1]));
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/export-schedule') {
+      try {
+        const payload = await request.json();
+        const units = Array.isArray(payload?.units) ? payload.units : [];
+        const file = await createWorkbook(env, units);
+        return new Response(file, {
+          headers: {
+            'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'Content-Disposition': 'attachment; filename="SSR-Schedule-Export.xlsx"',
+          },
+        });
+      } catch (error) {
+        return new Response(error.message || 'Export failed', { status: 500 });
+      }
+    }
+
+    return env.ASSETS.fetch(request);
+  },
+};
