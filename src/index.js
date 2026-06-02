@@ -83,7 +83,12 @@ function buildSelectionCode(unit) {
       : `GAS-${normalizedHeatCapacity}`;
 
   const reheatCode = unit.hotGasReheat ? 'HGRH' : 'NOHGRH';
-  const econCode = unit.economizer === 'barometric' ? 'ECO-BARO' : unit.economizer === 'powered' ? 'ECO-PE' : 'NOECO';
+  const econCode = unit.economizer === 'barometric'
+    ? 'ECO-BARO'
+    : unit.economizer === 'powered'
+      ? 'ECO-PE'
+      : 'NOECO';
+
   return `${familyCode}-${efficiencyCode}-${tonnageCode}-${voltageCode}-${heatCode}-${reheatCode}-${econCode}`;
 }
 
@@ -108,33 +113,40 @@ function parseDescriptor(descriptor) {
   const voltageMatch = text.match(/,\s*(2083|208-3|208\/3|4603|460-3|460\/3)/i);
 
   const tonnage = tonnageMatch ? normalizeTonnage(tonnageMatch[1]) : '';
-  const heatCapacity = heatMatch ? normalizeHeatCapacity(heatMatch[1]) : '0';
-  const heatType = heatMatch ? normalizeHeatType(heatMatch[2]) : 'None';
   const voltage = normalizeVoltage(voltageMatch ? voltageMatch[1] : '');
   const familyLabel = /\bHP\b/i.test(text) ? 'Heat Pump' : 'AC';
   const familyKey = familyLabel === 'Heat Pump' ? 'hp' : 'ac';
   const efficiencyLabel = 'Standard';
   const efficiencyKey = normalizeEfficiency(efficiencyLabel);
 
+  let heatType = 'None';
+  let heatCapacity = '';
+
+  if (heatMatch) {
+    heatType = normalizeHeatType(heatMatch[2]);
+    heatCapacity = normalizeHeatCapacity(heatMatch[1]);
+  }
+
   return {
     family_key: familyKey,
     family_label: familyLabel,
     efficiency_key: efficiencyKey,
     efficiency_label: efficiencyLabel,
-    tonnage_key: tonnage || null,
-    tonnage_value: tonnage ? Number(tonnage) : null,
-    voltage_key: voltage || null,
-    voltage_label: voltage || null,
-    aux_heat_type_key: heatType || null,
-    aux_heat_type_label: heatType || null,
-    aux_heat_capacity_key: heatCapacity && heatCapacity !== '0' ? heatCapacity : null,
-    aux_heat_capacity_label: heatCapacity && heatCapacity !== '0' ? `${heatCapacity} MBH` : null,
+    tonnage_key: tonnage || '',
+    tonnage_value: tonnage ? Number(tonnage) : 0,
+    voltage_key: voltage || '',
+    voltage_label: voltage || '',
+    aux_heat_type_key: heatType || 'None',
+    aux_heat_type_label: heatType || 'None',
+    aux_heat_capacity_key: heatCapacity || '',
+    aux_heat_capacity_label: heatCapacity ? `${heatCapacity} MBH` : '',
   };
 }
 
 function getCellValue(row, index) {
   const cell = row.getCell(index);
   const value = cell?.value;
+
   if (value && typeof value === 'object') {
     if ('text' in value) return normalizeText(value.text);
     if ('result' in value) return normalizeText(value.result);
@@ -142,6 +154,7 @@ function getCellValue(row, index) {
       return normalizeText(value.richText.map((part) => part.text || '').join(''));
     }
   }
+
   return normalizeText(value);
 }
 
@@ -259,14 +272,25 @@ async function insertImportModelResult(env, batchId, stagingRowId, modelNumber, 
 }
 
 async function upsertUnitModelV2(env, batchId, stagedRow) {
-  const existing = await env.DB.prepare(`
-    SELECT * FROM unit_models_v2 WHERE model_number = ?
-  `).bind(stagedRow.raw_model_number).first();
-
+  const modelNumber = stagedRow.raw_model_number || '';
+  const familyKey = stagedRow.family_key || '';
+  const familyLabel = stagedRow.family_label || '';
+  const tonnageKey = stagedRow.tonnage_key || '';
+  const tonnageValue = stagedRow.tonnage_value ?? 0;
+  const voltageKey = stagedRow.voltage_key || '';
+  const voltageLabel = stagedRow.voltage_label || '';
+  const auxHeatTypeKey = stagedRow.aux_heat_type_key || 'None';
+  const auxHeatTypeLabel = stagedRow.aux_heat_type_label || 'None';
+  const auxHeatCapacityKey = stagedRow.aux_heat_capacity_key || '';
+  const auxHeatCapacityLabel = stagedRow.aux_heat_capacity_label || '';
   const efficiencyLabel = stagedRow.efficiency_label || 'Standard';
   const efficiencyKey = normalizeEfficiency(
     stagedRow.efficiency_key || stagedRow.efficiency_label || 'Standard'
   );
+
+  const existing = await env.DB.prepare(`
+    SELECT * FROM unit_models_v2 WHERE model_number = ?
+  `).bind(modelNumber).first();
 
   if (!existing) {
     const inserted = await env.DB.prepare(`
@@ -287,17 +311,17 @@ async function upsertUnitModelV2(env, batchId, stagedRow) {
         source_batch_id
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
-      stagedRow.raw_model_number,
-      stagedRow.family_key,
-      stagedRow.family_label,
-      stagedRow.tonnage_key,
-      stagedRow.tonnage_value,
-      stagedRow.voltage_key,
-      stagedRow.voltage_label,
-      stagedRow.aux_heat_type_key,
-      stagedRow.aux_heat_type_label,
-      stagedRow.aux_heat_capacity_key,
-      stagedRow.aux_heat_capacity_label,
+      modelNumber,
+      familyKey,
+      familyLabel,
+      tonnageKey,
+      tonnageValue,
+      voltageKey,
+      voltageLabel,
+      auxHeatTypeKey,
+      auxHeatTypeLabel,
+      auxHeatCapacityKey,
+      auxHeatCapacityLabel,
       efficiencyKey,
       efficiencyLabel,
       batchId
@@ -307,18 +331,18 @@ async function upsertUnitModelV2(env, batchId, stagedRow) {
   }
 
   const changed = [
-    String(existing.family_key || '') !== String(stagedRow.family_key || ''),
-    String(existing.family_label || '') !== String(stagedRow.family_label || ''),
-    String(existing.tonnage_key || '') !== String(stagedRow.tonnage_key || ''),
-    Number(existing.tonnage_value ?? null) !== Number(stagedRow.tonnage_value ?? null),
-    String(existing.voltage_key || '') !== String(stagedRow.voltage_key || ''),
-    String(existing.voltage_label || '') !== String(stagedRow.voltage_label || ''),
-    String(existing.aux_heat_type_key || '') !== String(stagedRow.aux_heat_type_key || ''),
-    String(existing.aux_heat_type_label || '') !== String(stagedRow.aux_heat_type_label || ''),
-    String(existing.aux_heat_capacity_key || '') !== String(stagedRow.aux_heat_capacity_key || ''),
-    String(existing.aux_heat_capacity_label || '') !== String(stagedRow.aux_heat_capacity_label || ''),
-    String(existing.efficiency_key || '') !== String(efficiencyKey || ''),
-    String(existing.efficiency_label || '') !== String(efficiencyLabel || ''),
+    String(existing.family_key || '') !== String(familyKey),
+    String(existing.family_label || '') !== String(familyLabel),
+    String(existing.tonnage_key || '') !== String(tonnageKey),
+    Number(existing.tonnage_value ?? 0) !== Number(tonnageValue),
+    String(existing.voltage_key || '') !== String(voltageKey),
+    String(existing.voltage_label || '') !== String(voltageLabel),
+    String(existing.aux_heat_type_key || '') !== String(auxHeatTypeKey),
+    String(existing.aux_heat_type_label || '') !== String(auxHeatTypeLabel),
+    String(existing.aux_heat_capacity_key || '') !== String(auxHeatCapacityKey),
+    String(existing.aux_heat_capacity_label || '') !== String(auxHeatCapacityLabel),
+    String(existing.efficiency_key || '') !== String(efficiencyKey),
+    String(existing.efficiency_label || '') !== String(efficiencyLabel),
   ].some(Boolean);
 
   if (!changed) {
@@ -343,16 +367,16 @@ async function upsertUnitModelV2(env, batchId, stagedRow) {
         updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `).bind(
-    stagedRow.family_key,
-    stagedRow.family_label,
-    stagedRow.tonnage_key,
-    stagedRow.tonnage_value,
-    stagedRow.voltage_key,
-    stagedRow.voltage_label,
-    stagedRow.aux_heat_type_key,
-    stagedRow.aux_heat_type_label,
-    stagedRow.aux_heat_capacity_key,
-    stagedRow.aux_heat_capacity_label,
+    familyKey,
+    familyLabel,
+    tonnageKey,
+    tonnageValue,
+    voltageKey,
+    voltageLabel,
+    auxHeatTypeKey,
+    auxHeatTypeLabel,
+    auxHeatCapacityKey,
+    auxHeatCapacityLabel,
     efficiencyKey,
     efficiencyLabel,
     batchId,
@@ -833,10 +857,7 @@ export default {
         return json({ rows });
       } catch (error) {
         console.error('preview-schedule error', error);
-        return json(
-          { error: error.message || 'Preview failed' },
-          500
-        );
+        return json({ error: error.message || 'Preview failed' }, 500);
       }
     }
 
