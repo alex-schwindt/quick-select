@@ -120,6 +120,11 @@ export default function App() {
   const [isResolvingPreview, setIsResolvingPreview] = useState(false);
   const [selection, setSelection] = useState(makeInitialState());
 
+  const [importFile, setImportFile] = useState(null);
+  const [isImportingSchedule, setIsImportingSchedule] = useState(false);
+  const [importError, setImportError] = useState('');
+  const [importResult, setImportResult] = useState(null);
+
   const familyRule = FAMILY_RULES[selection.family];
 
   const heatOptions = useMemo(() => {
@@ -264,6 +269,54 @@ export default function App() {
     if (editingIndex === index) resetForm(nextDefaultTag(nextUnits));
   }
 
+  async function uploadAndImportSchedule() {
+    if (!importFile) {
+      setImportError('Please choose an Excel workbook first.');
+      return;
+    }
+
+    setIsImportingSchedule(true);
+    setImportError('');
+    setImportResult(null);
+
+    try {
+      const formData = new FormData();
+      formData.append('file', importFile);
+
+      const uploadResponse = await fetch('/api/upload-template', {
+        method: 'POST',
+        body: formData
+      });
+
+      const uploadData = await uploadResponse.json().catch(() => null);
+      if (!uploadResponse.ok) {
+        throw new Error(uploadData?.error || 'Upload failed.');
+      }
+
+      const importResponse = await fetch('/api/import-schedule', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source_filename: uploadData.key,
+          source_sheet: 'Schedule',
+          vendor: 'Tempmaster',
+          product_line: 'DS Commercial'
+        })
+      });
+
+      const importData = await importResponse.json().catch(() => null);
+      if (!importResponse.ok) {
+        throw new Error(importData?.error || 'Import failed.');
+      }
+
+      setImportResult(importData);
+    } catch (error) {
+      setImportError(error.message || 'Unable to upload and import workbook.');
+    } finally {
+      setIsImportingSchedule(false);
+    }
+  }
+
   async function exportWorkbook() {
     if (!scheduledUnits.length) return;
 
@@ -317,6 +370,78 @@ export default function App() {
       <main className="workspace multi-layout">
         <section className="panel selector-panel">
           <div className="panel-header">
+            <div>
+              <h2>Import schedule workbook</h2>
+              <p>Upload a DS Commercial schedule workbook and import its model rows into the catalog pipeline.</p>
+            </div>
+          </div>
+
+          <label className="form-field">
+            <span className="meta-label">Workbook file</span>
+            <input
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={(event) => {
+                const file = event.target.files?.[0] || null;
+                setImportFile(file);
+                setImportError('');
+              }}
+            />
+          </label>
+
+          <div className="builder-actions">
+            <button
+              className="primary-btn"
+              type="button"
+              onClick={uploadAndImportSchedule}
+              disabled={!importFile || isImportingSchedule}
+            >
+              {isImportingSchedule ? 'Uploading and importing...' : 'Upload and import'}
+            </button>
+          </div>
+
+          {importFile ? <p className="helper-text">Selected file: {importFile.name}</p> : null}
+          {importError ? <div className="error-banner">{importError}</div> : null}
+
+          {importResult?.ok ? (
+            <div className="logic-card">
+              <span className="meta-label">Import summary</span>
+              <ul>
+                <li>Batch ID: {importResult.batch?.id}</li>
+                <li>File: {importResult.batch?.source_filename}</li>
+                <li>Rows staged: {importResult.summary?.rows_staged ?? 0}</li>
+                <li>Rows parsed: {importResult.summary?.rows_parsed ?? 0}</li>
+                <li>Rows failed: {importResult.summary?.rows_failed ?? 0}</li>
+                <li>Warnings: {importResult.summary?.rows_with_warnings ?? 0}</li>
+                <li>Unique models: {importResult.summary?.unique_models_in_batch ?? 0}</li>
+                <li>Catalog inserts: {importResult.summary?.catalog_inserts ?? 0}</li>
+                <li>Catalog updates: {importResult.summary?.catalog_updates ?? 0}</li>
+                <li>Catalog unchanged: {importResult.summary?.catalog_unchanged ?? 0}</li>
+                <li>Duplicates in batch: {importResult.summary?.duplicates_in_batch ?? 0}</li>
+              </ul>
+
+              {Array.isArray(importResult.issues) && importResult.issues.length > 0 ? (
+                <>
+                  <p className="helper-text">Issues found during import:</p>
+                  <ul>
+                    {importResult.issues.map((issue, index) => (
+                      <li key={`${issue.type}-${index}`}>
+                        {issue.type === 'duplicate_model_in_batch'
+                          ? `Duplicate model ${issue.model_number} on rows ${issue.source_row_numbers?.join(', ')}`
+                          : issue.type === 'parse_warnings'
+                            ? `Parse warnings on ${issue.rows?.length || 0} row(s)`
+                            : issue.type}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                <p className="helper-text">No duplicate or parse issues were reported.</p>
+              )}
+            </div>
+          ) : null}
+
+          <div className="panel-header" style={{ marginTop: 24 }}>
             <div>
               <h2>{editingIndex === null ? 'Unit builder' : `Editing ${selection.tag}`}</h2>
               <p>Create one unit at a time, then add it to the project schedule.</p>
@@ -372,11 +497,11 @@ export default function App() {
             </label>
 
             <label className="form-field">
-             <span className="meta-label">Voltage</span>
-             <select value={selection.voltage} onChange={(event) => updateField('voltage', event.target.value)}>
+              <span className="meta-label">Voltage</span>
+              <select value={selection.voltage} onChange={(event) => updateField('voltage', event.target.value)}>
                 {VOLTAGES.map((option) => (
                   <option key={option} value={option}>
-                     {formatVoltageDisplay(option)}
+                    {formatVoltageDisplay(option)}
                   </option>
                 ))}
               </select>

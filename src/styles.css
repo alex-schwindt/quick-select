@@ -429,6 +429,11 @@ h2 {
   margin-top: 18px;
 }
 
+.selector-panel .logic-card + .panel-header {
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
 @media (max-width: 1080px) {
   .workspace.multi-layout {
     grid-template-columns: 1fr;
