@@ -263,17 +263,29 @@ async function upsertUnitModelV2(env, batchId, stagedRow) {
     SELECT * FROM unit_models_v2 WHERE model_number = ?
   `).bind(stagedRow.raw_model_number).first();
 
+  const efficiencyLabel = stagedRow.efficiency_label || 'Standard';
   const efficiencyKey = normalizeEfficiency(
-    stagedRow.efficiency_label || stagedRow.efficiency_key || 'Standard'
+    stagedRow.efficiency_key || stagedRow.efficiency_label || 'Standard'
   );
 
   if (!existing) {
     const inserted = await env.DB.prepare(`
       INSERT INTO unit_models_v2 (
-        model_number, family_key, family_label, tonnage_key, tonnage_value,
-        voltage_key, voltage_label, aux_heat_type_key, aux_heat_type_label,
-        aux_heat_capacity_key, aux_heat_capacity_label, efficiency_key, source_batch_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        model_number,
+        family_key,
+        family_label,
+        tonnage_key,
+        tonnage_value,
+        voltage_key,
+        voltage_label,
+        aux_heat_type_key,
+        aux_heat_type_label,
+        aux_heat_capacity_key,
+        aux_heat_capacity_label,
+        efficiency_key,
+        efficiency_label,
+        source_batch_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       stagedRow.raw_model_number,
       stagedRow.family_key,
@@ -287,7 +299,8 @@ async function upsertUnitModelV2(env, batchId, stagedRow) {
       stagedRow.aux_heat_capacity_key,
       stagedRow.aux_heat_capacity_label,
       efficiencyKey,
-      batchId,
+      efficiencyLabel,
+      batchId
     ).run();
 
     return { action: 'inserted', unitModelId: inserted.meta.last_row_id };
@@ -305,6 +318,7 @@ async function upsertUnitModelV2(env, batchId, stagedRow) {
     String(existing.aux_heat_capacity_key || '') !== String(stagedRow.aux_heat_capacity_key || ''),
     String(existing.aux_heat_capacity_label || '') !== String(stagedRow.aux_heat_capacity_label || ''),
     String(existing.efficiency_key || '') !== String(efficiencyKey || ''),
+    String(existing.efficiency_label || '') !== String(efficiencyLabel || ''),
   ].some(Boolean);
 
   if (!changed) {
@@ -313,10 +327,20 @@ async function upsertUnitModelV2(env, batchId, stagedRow) {
 
   await env.DB.prepare(`
     UPDATE unit_models_v2
-    SET family_key = ?, family_label = ?, tonnage_key = ?, tonnage_value = ?,
-        voltage_key = ?, voltage_label = ?, aux_heat_type_key = ?, aux_heat_type_label = ?,
-        aux_heat_capacity_key = ?, aux_heat_capacity_label = ?, efficiency_key = ?,
-        source_batch_id = ?, updated_at = CURRENT_TIMESTAMP
+    SET family_key = ?,
+        family_label = ?,
+        tonnage_key = ?,
+        tonnage_value = ?,
+        voltage_key = ?,
+        voltage_label = ?,
+        aux_heat_type_key = ?,
+        aux_heat_type_label = ?,
+        aux_heat_capacity_key = ?,
+        aux_heat_capacity_label = ?,
+        efficiency_key = ?,
+        efficiency_label = ?,
+        source_batch_id = ?,
+        updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `).bind(
     stagedRow.family_key,
@@ -330,8 +354,9 @@ async function upsertUnitModelV2(env, batchId, stagedRow) {
     stagedRow.aux_heat_capacity_key,
     stagedRow.aux_heat_capacity_label,
     efficiencyKey,
+    efficiencyLabel,
     batchId,
-    existing.id,
+    existing.id
   ).run();
 
   return { action: 'updated', unitModelId: existing.id };
