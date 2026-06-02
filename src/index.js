@@ -550,7 +550,7 @@ async function handleGetImportBatchCatalogResults(env, batchId) {
 
 async function listCatalog(env, filters = {}) {
   let sql = `
-    SELECT m.*, d.cut_sheet_url, d.accessories_url, d.wiring_url, d.iom_url
+    SELECT m.*, d.cutsheet_url, d.accessories_url, d.wiring_url, d.iom_url
     FROM unit_models m
     LEFT JOIN unit_documents d ON d.model_id = m.id
     WHERE 1 = 1
@@ -583,6 +583,7 @@ async function listCatalog(env, filters = {}) {
   }
 
   sql += ' ORDER BY m.model_number';
+
   const stmt = env.DB.prepare(sql).bind(...binds);
   const result = await stmt.all();
   return result.results || [];
@@ -632,7 +633,7 @@ function buildResolvedScheduleRow(unit, match, index = 0) {
     remarks: optionSummary(unit, match),
     selectionCode: buildSelectionCode(unit),
     matchFound: Boolean(match),
-    cutSheetUrl: asBlank(match?.cut_sheet_url),
+    cutSheetUrl: asBlank(match?.cutsheet_url),
     accessoriesUrl: asBlank(match?.accessories_url),
     wiringUrl: asBlank(match?.wiring_url),
     iomUrl: asBlank(match?.iom_url),
