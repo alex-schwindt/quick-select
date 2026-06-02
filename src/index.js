@@ -703,32 +703,138 @@ function buildResolvedScheduleRow(unit, match, index = 0) {
   return {
     tag: normalizeText(unit.tag) || `RTU-${index + 1}`,
     areaServed: asBlank(unit.areaServed),
-    manufacturer: asBlank(match?.brand || 'Tempmaster'),
+
+    manufacturer: asBlank(
+      match?.raw_brand ||
+      match?.brand ||
+      match?.manufacturer ||
+      'Tempmaster'
+    ),
+
     modelNumber: asBlank(match?.model_number || buildSelectionCode(unit)),
-    nominalTons: asBlank(match?.tonnage || unit.tonnage),
-    unitType: asBlank(match?.unit_type || unit.family),
-    unitEer: asBlank(match?.unit_eer),
-    seerIeerr: asBlank(match?.seer_ieer),
-    supplyCfm: asBlank(match?.cooling_cfm),
-    supplyEsp: '',
+
+    nominalTons: asBlank(
+      match?.tonnage_value ??
+      match?.tonnage_key ??
+      unit.tonnage
+    ),
+
+    unitType: asBlank(
+      match?.family_label ||
+      match?.unit_type ||
+      unit.family
+    ),
+
+    unitEer: asBlank(
+      match?.raw_unit_eer ||
+      match?.unit_eer
+    ),
+
+    seerIeerr: asBlank(
+      match?.raw_seer_ieer ||
+      match?.seer_ieer
+    ),
+
+    supplyCfm: asBlank(
+      match?.raw_airflow_cfm ||
+      match?.supply_airflow_cfm ||
+      match?.cooling_cfm
+    ),
+
+    supplyEsp: asBlank(
+      match?.raw_supply_fan_esp_in_wg ||
+      match?.supply_fan_esp_in_wg
+    ),
+
     supplyQty: 1,
-    supplyBhp: '',
-    supplyHp: '',
-    supplyRpm: '',
-    coolingEat: joinSlash(match?.cooling_eat_db, match?.cooling_eat_wb),
-    coolingLat: joinSlash(match?.cooling_lat_db, match?.cooling_lat_wb),
-    coolingSensible: asBlank(match?.cooling_sensible_capacity_mbh),
-    coolingTotal: asBlank(match?.cooling_total_capacity_mbh),
-    heatingCfm: asBlank(match?.heating_cfm || match?.cooling_cfm),
-    heatingEat: asBlank(match?.heating_eat_f),
-    heatingLat: asBlank(match?.heating_lat_f),
-    heatingInput: asBlank(match?.heating_capacity_mbtu || unit.heatCapacity),
-    heatingOutput: asBlank(match?.heating_output_capacity || ''),
-    voltPh: asBlank(match?.voltage || unit.voltage),
-    mca: asBlank(match?.mca),
-    mocp: asBlank(match?.mocp),
-    weight: asBlank(match?.operating_weight_lbs),
-    remarks: optionSummary(unit, match),
+
+    supplyBhp: asBlank(
+      match?.supply_fan_bhp
+    ),
+
+    supplyHp: asBlank(
+      match?.raw_supply_fan_hp ||
+      match?.supply_fan_hp
+    ),
+
+    supplyRpm: asBlank(
+      match?.raw_supply_fan_rpm ||
+      match?.supply_fan_rpm
+    ),
+
+    coolingEat: joinSlash(
+      match?.cooling_eat_db,
+      match?.cooling_eat_wb
+    ),
+
+    coolingLat: joinSlash(
+      match?.cooling_lat_db,
+      match?.cooling_lat_wb
+    ),
+
+    coolingSensible: asBlank(
+      match?.raw_cooling_sensible_mbh ||
+      match?.cooling_sensible_capacity_mbh
+    ),
+
+    coolingTotal: asBlank(
+      match?.raw_cooling_total_mbh ||
+      match?.cooling_total_capacity_mbh
+    ),
+
+    heatingCfm: asBlank(
+      match?.heating_cfm ||
+      match?.raw_airflow_cfm ||
+      match?.supply_airflow_cfm ||
+      match?.cooling_cfm
+    ),
+
+    heatingEat: asBlank(
+      match?.heating_eat_f
+    ),
+
+    heatingLat: asBlank(
+      match?.heating_lat_f
+    ),
+
+    heatingInput: asBlank(
+      match?.raw_heating_input_mbh ||
+      match?.heating_capacity_mbtu ||
+      unit.heatCapacity
+    ),
+
+    heatingOutput: asBlank(
+      match?.raw_heating_output_mbh ||
+      match?.heating_output_capacity
+    ),
+
+    voltPh: asBlank(
+      match?.raw_voltage ||
+      match?.voltage_label ||
+      match?.voltage ||
+      unit.voltage
+    ),
+
+    mca: asBlank(
+      match?.raw_mca ||
+      match?.mca
+    ),
+
+    mocp: asBlank(
+      match?.raw_mocp ||
+      match?.mocp
+    ),
+
+    weight: asBlank(
+      match?.raw_weight_lbs ||
+      match?.operating_weight_lbs
+    ),
+
+    remarks: asBlank(
+      match?.raw_remarks ||
+      optionSummary(unit, match)
+    ),
+
     selectionCode: buildSelectionCode(unit),
     matchFound: Boolean(match),
     cutSheetUrl: asBlank(match?.cutsheet_url),
