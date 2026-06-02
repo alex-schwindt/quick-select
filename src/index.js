@@ -1,5 +1,12 @@
 import ExcelJS from 'exceljs';
 
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
 function toInt(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
@@ -11,17 +18,360 @@ function cleanBlank(value) {
   return text === '' ? null : text;
 }
 
+function asBlank(value) {
+  return value === null || value === undefined || value === '' ? '' : value;
+}
+
 function coerceArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
-function summarizeIssueRows(rows) {
-  return rows.map((row) => ({
-    source_row_number: row.source_row_number,
-    model_number: row.raw_model_number,
-    parse_status: row.parse_status,
-    parse_notes: cleanBlank(row.parse_notes),
-  }));
+function normalizeText(value) {
+  return String(value ?? '').trim();
+}
+
+function normalizeFamily(value) {
+  const v = normalizeText(value).toLowerCase();
+  if (['ac', 'gas pack', 'gaspack'].includes(v)) return 'ac';
+  if (['heat pump', 'heatpump', 'hp'].includes(v)) return 'hp';
+  return v.replace(/\s+/g, '-');
+}
+
+function normalizeEfficiency(value) {
+  const v = normalizeText(value).toLowerCase();
+  if (['standard', 'std'].includes(v)) return 'std';
+  if (['high', 'high efficiency', 'high-efficiency'].includes(v)) return 'high';
+  return v.replace(/\s+/g, '-');
+}
+
+function normalizeVoltage(value) {
+  const compact = normalizeText(value).toLowerCase().replace(/\s+/g, '').replace(/v/g, '');
+  if (['208/3', '208-3', '2083', '208/230/3', '2082303', '208-3-60'].includes(compact.replace('/230', ''))) return '208-3';
+  if (['208/230/3', '2082303', '208-3-60'].includes(compact)) return '208-3';
+  if (['460/3', '460-3', '4603', '460-3-60'].includes(compact)) return '460-3';
+  return compact.replace(/\//g, '-');
+}
+
+function normalizeHeatType(value) {
+  const v = normalizeText(value).toLowerCase();
+  if (['aluminum gas heat', 'gas heat', 'gas'].includes(v)) return 'gas';
+  if (['electric heat', 'electric'].includes(v)) return 'electric';
+  if (['none', 'no heat', ''].includes(v)) return 'none';
+  return v.replace(/\s+/g, '-');
+}
+
+function normalizeHeatCapacity(value) {
+  const v = normalizeText(value).toLowerCase();
+  if (!v) return '0';
+  return v.replace(/\s+/g, '').replace('mbh', '').replace('.0', '');
+}
+
+function normalizeTonnage(value) {
+  return String(value ?? '').trim().replace('.0', '');
+}
+
+function buildSelectionCode(unit) {
+  const familyCode = normalizeFamily(unit.family) === 'hp' ? 'HP' : 'AC';
+  const efficiencyCode = normalizeEfficiency(unit.efficiency) === 'high' ? 'HI' : 'STD';
+  const tonnageCode = String(unit.tonnage).replace('.', 'P');
+  const voltageCode = normalizeVoltage(unit.voltage) === '460-3' ? '460' : '208';
+  const heatTypeKey = normalizeHeatType(unit.heatType);
+  const heatCode = heatTypeKey === 'none'
+    ? 'NOHEAT'
+    : heatTypeKey === 'electric'
+      ? `ELEC-${normalizeHeatCapacity(unit.heatCapacity)}`
+      : `GAS-${normalizeHeatCapacity(unit.heatCapacity)}MBH`;
+  const reheatCode = unit.hotGasReheat ? 'HGRH' : 'NOHGRH';
+  const econCode = unit.economizer === 'barometric' ? 'ECO-BARO' : unit.economizer === 'powered' ? 'ECO-PE' : 'NOECO';
+  return `${familyCode}-${efficiencyCode}-${tonnageCode}-${voltageCode}-${heatCode}-${reheatCode}-${econCode}`;
+}
+
+function optionSummary(unit, match) {
+  return normalizeText(unit.remarks) || normalizeText(match?.remarks_default) || [
+    unit.hotGasReheat ? 'Hot Gas Reheat' : null,
+    unit.economizer === 'barometric' ? 'Economizer w/ Barometric Relief' : null,
+    unit.economizer === 'powered' ? 'Economizer w/ Powered Exhaust' : null,
+    unit.curb ? 'Curb' : null,
+  ].filter(Boolean).join(', ');
+}
+
+function joinSlash(a, b) {
+  const parts = [asBlank(a), asBlank(b)].filter((v) => v !== '');
+  return parts.length ? parts.join('/') : '';
+}
+
+function parseDescriptor(descriptor) {
+  const text = normalizeText(descriptor);
+  const tonnageMatch = text.match(/^(\d+(?:\.\d+)?)\s*-?\s*Ton/i);
+  const heatMatch = text.match(/(\d+(?:\.\d+)?)\s*MBH\s*(Gas|Electric)/i);
+  const voltageMatch = text.match(/,\s*(2083|208-3|208\/3|4603|460-3|460\/3)/i);
+
+  const tonnage = tonnageMatch ? normalizeTonnage(tonnageMatch[1]) : '';
+  const heatCapacity = heatMatch ? normalizeHeatCapacity(heatMatch[1]) : '0';
+  const heatType = heatMatch ? normalizeHeatType(heatMatch[2]) : 'none';
+  const voltage = normalizeVoltage(voltageMatch ? voltageMatch[1] : '');
+
+  return {
+    family_key: 'ac',
+    family_label: 'AC',
+    efficiency_key: 'std',
+    efficiency_label: 'Standard',
+    tonnage_key: tonnage || null,
+    tonnage_value: tonnage ? Number(tonnage) : null,
+    voltage_key: voltage || null,
+    voltage_label: voltage || null,
+    aux_heat_type_key: heatType || null,
+    aux_heat_type_label: heatType ? heatType.toUpperCase() : null,
+    aux_heat_capacity_key: heatCapacity || null,
+    aux_heat_capacity_label: heatCapacity && heatCapacity !== '0' ? `${heatCapacity} MBH` : null,
+  };
+}
+
+function getCellValue(row, index) {
+  const cell = row.getCell(index);
+  const value = cell?.value;
+  if (value && typeof value === 'object') {
+    if ('text' in value) return normalizeText(value.text);
+    if ('result' in value) return normalizeText(value.result);
+    if ('richText' in value && Array.isArray(value.richText)) {
+      return normalizeText(value.richText.map((part) => part.text || '').join(''));
+    }
+  }
+  return normalizeText(value);
+}
+
+async function loadWorkbookFromSource(env, sourceFilename) {
+  const r2Object = await env.TEMPLATES.get(sourceFilename);
+  if (r2Object) {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(await r2Object.arrayBuffer());
+    return workbook;
+  }
+  throw new Error(`Workbook not found in R2: ${sourceFilename}`);
+}
+
+async function insertBatch(env, payload) {
+  const result = await env.DB.prepare(`
+    INSERT INTO import_batches (source_filename, source_sheet, vendor, product_line, notes)
+    VALUES (?, ?, ?, ?, ?)
+  `)
+    .bind(
+      payload.source_filename,
+      payload.source_sheet || 'Schedule',
+      payload.vendor || null,
+      payload.product_line || null,
+      payload.notes || null,
+    )
+    .run();
+
+  return result.meta.last_row_id;
+}
+
+async function insertStagingRow(env, batchId, rowData) {
+  const result = await env.DB.prepare(`
+    INSERT INTO staging_schedule_rows (
+      batch_id, source_row_number, source_descriptor, raw_model_number, raw_brand, raw_qty,
+      raw_airflow_cfm, raw_supply_fan_hp, raw_supply_fan_esp_in_wg, raw_supply_fan_rpm,
+      raw_cooling_total_mbh, raw_cooling_sensible_mbh, raw_unit_eer, raw_seer_ieer,
+      raw_refrigerant, raw_heating_input_mbh, raw_heating_output_mbh, raw_voltage,
+      raw_mca, raw_mocp, raw_weight_lbs, raw_remarks,
+      family_key, family_label, efficiency_key, efficiency_label,
+      tonnage_key, tonnage_value, voltage_key, voltage_label,
+      aux_heat_type_key, aux_heat_type_label, aux_heat_capacity_key, aux_heat_capacity_label,
+      parse_status, parse_notes
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    batchId,
+    rowData.source_row_number,
+    rowData.source_descriptor,
+    rowData.raw_model_number,
+    rowData.raw_brand,
+    rowData.raw_qty,
+    rowData.raw_airflow_cfm,
+    rowData.raw_supply_fan_hp,
+    rowData.raw_supply_fan_esp_in_wg,
+    rowData.raw_supply_fan_rpm,
+    rowData.raw_cooling_total_mbh,
+    rowData.raw_cooling_sensible_mbh,
+    rowData.raw_unit_eer,
+    rowData.raw_seer_ieer,
+    rowData.raw_refrigerant,
+    rowData.raw_heating_input_mbh,
+    rowData.raw_heating_output_mbh,
+    rowData.raw_voltage,
+    rowData.raw_mca,
+    rowData.raw_mocp,
+    rowData.raw_weight_lbs,
+    rowData.raw_remarks,
+    rowData.family_key,
+    rowData.family_label,
+    rowData.efficiency_key,
+    rowData.efficiency_label,
+    rowData.tonnage_key,
+    rowData.tonnage_value,
+    rowData.voltage_key,
+    rowData.voltage_label,
+    rowData.aux_heat_type_key,
+    rowData.aux_heat_type_label,
+    rowData.aux_heat_capacity_key,
+    rowData.aux_heat_capacity_label,
+    rowData.parse_status,
+    rowData.parse_notes,
+  ).run();
+
+  return result.meta.last_row_id;
+}
+
+async function insertImportModelResult(env, batchId, stagingRowId, modelNumber, unitModelId, action, reason = null) {
+  await env.DB.prepare(`
+    INSERT INTO import_model_results (batch_id, staging_row_id, model_number, unit_model_id, action, reason)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).bind(batchId, stagingRowId, modelNumber || null, unitModelId || null, action, reason).run();
+}
+
+async function upsertUnitModelV2(env, batchId, stagedRow) {
+  const existing = await env.DB.prepare(`
+    SELECT * FROM unit_models_v2 WHERE model_number = ?
+  `).bind(stagedRow.raw_model_number).first();
+
+  if (!existing) {
+    const inserted = await env.DB.prepare(`
+      INSERT INTO unit_models_v2 (
+        model_number, family_key, family_label, tonnage_key, tonnage_value,
+        voltage_key, voltage_label, aux_heat_type_key, aux_heat_type_label,
+        aux_heat_capacity_key, aux_heat_capacity_label, source_batch_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      stagedRow.raw_model_number,
+      stagedRow.family_key,
+      stagedRow.family_label,
+      stagedRow.tonnage_key,
+      stagedRow.tonnage_value,
+      stagedRow.voltage_key,
+      stagedRow.voltage_label,
+      stagedRow.aux_heat_type_key,
+      stagedRow.aux_heat_type_label,
+      stagedRow.aux_heat_capacity_key,
+      stagedRow.aux_heat_capacity_label,
+      batchId,
+    ).run();
+
+    return { action: 'inserted', unitModelId: inserted.meta.last_row_id };
+  }
+
+  const changed = [
+    existing.family_key !== stagedRow.family_key,
+    String(existing.tonnage_key || '') !== String(stagedRow.tonnage_key || ''),
+    String(existing.voltage_key || '') !== String(stagedRow.voltage_key || ''),
+    String(existing.aux_heat_type_key || '') !== String(stagedRow.aux_heat_type_key || ''),
+    String(existing.aux_heat_capacity_key || '') !== String(stagedRow.aux_heat_capacity_key || ''),
+  ].some(Boolean);
+
+  if (!changed) {
+    return { action: 'unchanged', unitModelId: existing.id };
+  }
+
+  await env.DB.prepare(`
+    UPDATE unit_models_v2
+    SET family_key = ?, family_label = ?, tonnage_key = ?, tonnage_value = ?,
+        voltage_key = ?, voltage_label = ?, aux_heat_type_key = ?, aux_heat_type_label = ?,
+        aux_heat_capacity_key = ?, aux_heat_capacity_label = ?, source_batch_id = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).bind(
+    stagedRow.family_key,
+    stagedRow.family_label,
+    stagedRow.tonnage_key,
+    stagedRow.tonnage_value,
+    stagedRow.voltage_key,
+    stagedRow.voltage_label,
+    stagedRow.aux_heat_type_key,
+    stagedRow.aux_heat_type_label,
+    stagedRow.aux_heat_capacity_key,
+    stagedRow.aux_heat_capacity_label,
+    batchId,
+    existing.id,
+  ).run();
+
+  return { action: 'updated', unitModelId: existing.id };
+}
+
+async function stageDsCommercialWorkbook(env, payload) {
+  const workbook = await loadWorkbookFromSource(env, payload.source_filename);
+  const worksheet = workbook.getWorksheet(payload.source_sheet || 'Schedule');
+  if (!worksheet) throw new Error(`Worksheet not found: ${payload.source_sheet || 'Schedule'}`);
+
+  const batchId = await insertBatch(env, payload);
+  const stagedRows = [];
+
+  worksheet.eachRow((row, rowNumber) => {
+    const descriptor = getCellValue(row, 1);
+    const modelNumber = getCellValue(row, 2);
+    const brand = getCellValue(row, 3);
+    const qty = getCellValue(row, 4);
+
+    if (!descriptor || descriptor.toLowerCase() === 'tag #' || modelNumber.toLowerCase() === 'model number') return;
+    if (!/^\d+(?:\.\d+)?-?ton/i.test(descriptor.replace(/\s+/g, ''))) return;
+    if (!modelNumber) return;
+
+    stagedRows.push({
+      source_row_number: rowNumber,
+      source_descriptor: descriptor,
+      raw_model_number: modelNumber,
+      raw_brand: brand,
+      raw_qty: qty,
+      raw_airflow_cfm: getCellValue(row, 5),
+      raw_supply_fan_hp: getCellValue(row, 7),
+      raw_supply_fan_esp_in_wg: getCellValue(row, 8),
+      raw_supply_fan_rpm: getCellValue(row, 9),
+      raw_cooling_total_mbh: getCellValue(row, 16),
+      raw_cooling_sensible_mbh: getCellValue(row, 17),
+      raw_unit_eer: getCellValue(row, 18),
+      raw_seer_ieer: getCellValue(row, 19),
+      raw_refrigerant: getCellValue(row, 20),
+      raw_heating_input_mbh: getCellValue(row, 22),
+      raw_heating_output_mbh: getCellValue(row, 23),
+      raw_voltage: getCellValue(row, 24),
+      raw_mca: getCellValue(row, 25),
+      raw_mocp: getCellValue(row, 26),
+      raw_weight_lbs: getCellValue(row, 28),
+      raw_remarks: getCellValue(row, 29),
+      ...parseDescriptor(descriptor),
+      parse_status: 'parsed',
+      parse_notes: null,
+    });
+  });
+
+  const duplicateCounts = new Map();
+  for (const row of stagedRows) {
+    duplicateCounts.set(row.raw_model_number, (duplicateCounts.get(row.raw_model_number) || 0) + 1);
+  }
+
+  const seenModels = new Set();
+
+  for (const row of stagedRows) {
+    const stagingRowId = await insertStagingRow(env, batchId, row);
+    row.id = stagingRowId;
+
+    const occurrences = duplicateCounts.get(row.raw_model_number) || 0;
+    if (occurrences > 1 && seenModels.has(row.raw_model_number)) {
+      await insertImportModelResult(
+        env,
+        batchId,
+        stagingRowId,
+        row.raw_model_number,
+        null,
+        'duplicate_in_batch',
+        'Duplicate model number within import batch'
+      );
+      continue;
+    }
+
+    seenModels.add(row.raw_model_number);
+    const upsert = await upsertUnitModelV2(env, batchId, row);
+    await insertImportModelResult(env, batchId, stagingRowId, row.raw_model_number, upsert.unitModelId, upsert.action, null);
+  }
+
+  return batchId;
 }
 
 async function getBatch(env, batchId) {
@@ -43,10 +393,10 @@ async function getBatchSummary(env, batchId) {
 
   const actions = await env.DB.prepare(`
     SELECT
-      SUM(CASE WHEN action = 'inserted' THEN 1 ELSE 0 END) AS catalog_inserts,
-      SUM(CASE WHEN action = 'updated' THEN 1 ELSE 0 END) AS catalog_updates,
-      SUM(CASE WHEN action = 'unchanged' THEN 1 ELSE 0 END) AS catalog_unchanged,
-      SUM(CASE WHEN action = 'duplicate_in_batch' THEN 1 ELSE 0 END) AS duplicates_in_batch
+      COALESCE(SUM(CASE WHEN action = 'inserted' THEN 1 ELSE 0 END), 0) AS catalog_inserts,
+      COALESCE(SUM(CASE WHEN action = 'updated' THEN 1 ELSE 0 END), 0) AS catalog_updates,
+      COALESCE(SUM(CASE WHEN action = 'unchanged' THEN 1 ELSE 0 END), 0) AS catalog_unchanged,
+      COALESCE(SUM(CASE WHEN action = 'duplicate_in_batch' THEN 1 ELSE 0 END), 0) AS duplicates_in_batch
     FROM import_model_results
     WHERE batch_id = ?
   `).bind(batchId).first();
@@ -63,6 +413,15 @@ async function getBatchSummary(env, batchId) {
     catalog_unchanged: toInt(actions?.catalog_unchanged),
     duplicates_in_batch: toInt(actions?.duplicates_in_batch),
   };
+}
+
+function summarizeIssueRows(rows) {
+  return rows.map((row) => ({
+    source_row_number: row.source_row_number,
+    model_number: row.raw_model_number,
+    parse_status: row.parse_status,
+    parse_notes: cleanBlank(row.parse_notes),
+  }));
 }
 
 async function getBatchIssues(env, batchId) {
@@ -101,10 +460,7 @@ async function getBatchIssues(env, batchId) {
 
   const warningRows = summarizeIssueRows(coerceArray(parseIssues.results));
   if (warningRows.length) {
-    issues.push({
-      type: 'parse_warnings',
-      rows: warningRows,
-    });
+    issues.push({ type: 'parse_warnings', rows: warningRows });
   }
 
   return issues;
@@ -168,123 +524,6 @@ async function handleGetImportBatchCatalogResults(env, batchId) {
   return json({ ok: true, batch, results: coerceArray(rows.results) });
 }
 
-function json(data, status = 200) {
-  return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
-}
-
-function normalizeText(value) {
-  return String(value ?? '').trim();
-}
-
-function asBlank(value) {
-  return value === null || value === undefined || value === '' ? '' : value;
-}
-
-function normalizeFamily(value) {
-  const v = normalizeText(value).toLowerCase();
-  if (['ac', 'gas pack', 'gaspack'].includes(v)) return 'ac';
-  if (['heat pump', 'heatpump', 'hp'].includes(v)) return 'hp';
-  return v.replace(/\s+/g, '-');
-}
-
-function normalizeEfficiency(value) {
-  const v = normalizeText(value).toLowerCase();
-  if (['standard', 'std'].includes(v)) return 'std';
-  if (['high', 'high efficiency', 'high-efficiency'].includes(v)) return 'high';
-  return v.replace(/\s+/g, '-');
-}
-
-function normalizeVoltage(value) {
-  const compact = normalizeText(value).toLowerCase().replace(/\s+/g, '').replace(/v/g, '');
-  if (['208/3', '208-3', '2083', '208/230/3', '2082303'].includes(compact.replace('/230', ''))) return '208-3';
-  if (['208/230/3', '2082303'].includes(compact)) return '208-3';
-  if (['460/3', '460-3', '4603'].includes(compact)) return '460-3';
-  return compact.replace(/\//g, '-');
-}
-
-function normalizeHeatType(value) {
-  const v = normalizeText(value).toLowerCase();
-  if (['aluminum gas heat', 'gas heat', 'gas'].includes(v)) return 'gas';
-  if (['electric heat', 'electric'].includes(v)) return 'electric';
-  if (['none', 'no heat', ''].includes(v)) return 'none';
-  return v.replace(/\s+/g, '-');
-}
-
-function normalizeHeatCapacity(value) {
-  const v = normalizeText(value).toLowerCase();
-  if (!v) return '0';
-  return v.replace(/\s+/g, '').replace('mbh', '').replace('.0', '');
-}
-
-function normalizeTonnage(value) {
-  return String(value ?? '').trim().replace('.0', '');
-}
-
-function buildSelectionCode(unit) {
-  const familyCode = normalizeFamily(unit.family) === 'hp' ? 'HP' : 'AC';
-  const efficiencyCode = normalizeEfficiency(unit.efficiency) === 'high' ? 'HI' : 'STD';
-  const tonnageCode = String(unit.tonnage).replace('.', 'P');
-  const voltageCode = normalizeVoltage(unit.voltage) === '460-3' ? '460' : '208';
-  const heatTypeKey = normalizeHeatType(unit.heatType);
-  const heatCode = heatTypeKey === 'none'
-    ? 'NOHEAT'
-    : heatTypeKey === 'electric'
-      ? `ELEC-${normalizeHeatCapacity(unit.heatCapacity)}`
-      : `GAS-${normalizeHeatCapacity(unit.heatCapacity)}MBH`;
-  const reheatCode = unit.hotGasReheat ? 'HGRH' : 'NOHGRH';
-  const econCode = unit.economizer === 'barometric' ? 'ECO-BARO' : unit.economizer === 'powered' ? 'ECO-PE' : 'NOECO';
-  return `${familyCode}-${efficiencyCode}-${tonnageCode}-${voltageCode}-${heatCode}-${reheatCode}-${econCode}`;
-}
-
-function optionSummary(unit, match) {
-  return normalizeText(unit.remarks) || normalizeText(match?.remarks_default) || [
-    unit.hotGasReheat ? 'Hot Gas Reheat' : null,
-    unit.economizer === 'barometric' ? 'Economizer w/ Barometric Relief' : null,
-    unit.economizer === 'powered' ? 'Economizer w/ Powered Exhaust' : null,
-    unit.curb ? 'Curb' : null
-  ].filter(Boolean).join(', ');
-}
-
-const COL = {
-  tag: 2,
-  areaServed: 3,
-  manufacturer: 4,
-  modelNumber: 5,
-  nominalTons: 6,
-  unitType: 7,
-  unitEer: 8,
-  seerIeerr: 9,
-  supplyCfm: 10,
-  supplyEsp: 11,
-  supplyQty: 12,
-  supplyBhp: 13,
-  supplyHp: 14,
-  supplyRpm: 15,
-  coolingEat: 16,
-  coolingLat: 17,
-  coolingSensible: 18,
-  coolingTotal: 19,
-  heatingCfm: 20,
-  heatingEat: 21,
-  heatingLat: 22,
-  heatingInput: 23,
-  heatingOutput: 24,
-  voltPh: 25,
-  mca: 26,
-  mocp: 27,
-  weight: 28,
-  remarks: 29,
-};
-
-async function getTemplateWorkbook(env) {
-  const object = await env.TEMPLATES.get('SSR-Schedule-Example.xlsx');
-  if (!object) throw new Error('Template workbook not found in R2 bucket.');
-  const arrayBuffer = await object.arrayBuffer();
-  const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.load(arrayBuffer);
-  return workbook;
-}
-
 async function listCatalog(env, filters = {}) {
   let sql = `
     SELECT m.*, d.cut_sheet_url, d.accessories_url, d.wiring_url, d.iom_url
@@ -337,11 +576,6 @@ async function findMatchingModel(env, unit) {
   return matches[0] || null;
 }
 
-function joinSlash(a, b) {
-  const parts = [asBlank(a), asBlank(b)].filter((v) => v !== '');
-  return parts.length ? parts.join('/') : '';
-}
-
 function buildResolvedScheduleRow(unit, match, index = 0) {
   return {
     tag: normalizeText(unit.tag) || `RTU-${index + 1}`,
@@ -389,6 +623,46 @@ async function resolveScheduleRows(env, units) {
     rows.push(buildResolvedScheduleRow(unit, match, index));
   }
   return rows;
+}
+
+const COL = {
+  tag: 2,
+  areaServed: 3,
+  manufacturer: 4,
+  modelNumber: 5,
+  nominalTons: 6,
+  unitType: 7,
+  unitEer: 8,
+  seerIeerr: 9,
+  supplyCfm: 10,
+  supplyEsp: 11,
+  supplyQty: 12,
+  supplyBhp: 13,
+  supplyHp: 14,
+  supplyRpm: 15,
+  coolingEat: 16,
+  coolingLat: 17,
+  coolingSensible: 18,
+  coolingTotal: 19,
+  heatingCfm: 20,
+  heatingEat: 21,
+  heatingLat: 22,
+  heatingInput: 23,
+  heatingOutput: 24,
+  voltPh: 25,
+  mca: 26,
+  mocp: 27,
+  weight: 28,
+  remarks: 29,
+};
+
+async function getTemplateWorkbook(env) {
+  const object = await env.TEMPLATES.get('SSR-Schedule-Example.xlsx');
+  if (!object) throw new Error('Template workbook not found in R2 bucket.');
+  const arrayBuffer = await object.arrayBuffer();
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(arrayBuffer);
+  return workbook;
 }
 
 async function createWorkbook(env, units) {
@@ -454,6 +728,22 @@ export default {
       };
       const results = await listCatalog(env, filters);
       return json({ items: results });
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/import-schedule') {
+      try {
+        const payload = await request.json();
+        if (!payload?.source_filename) {
+          return json({ error: 'source_filename is required.' }, 400);
+        }
+        const batchId = await stageDsCommercialWorkbook(env, payload);
+        const batch = await getBatch(env, batchId);
+        const summary = await getBatchSummary(env, batchId);
+        const issues = await getBatchIssues(env, batchId);
+        return json({ ok: true, batch, summary, issues, links: buildBatchLinks(batchId) });
+      } catch (error) {
+        return json({ error: error.message || 'Import failed.' }, 500);
+      }
     }
 
     if (request.method === 'POST' && url.pathname === '/api/preview-schedule') {
