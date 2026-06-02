@@ -1,10 +1,175 @@
 import ExcelJS from 'exceljs';
 
+function toInt(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
+function cleanBlank(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  return text === '' ? null : text;
+}
+
+function coerceArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function summarizeIssueRows(rows) {
+  return rows.map((row) => ({
+    source_row_number: row.source_row_number,
+    model_number: row.raw_model_number,
+    parse_status: row.parse_status,
+    parse_notes: cleanBlank(row.parse_notes),
+  }));
+}
+
+async function getBatch(env, batchId) {
+  const result = await env.DB.prepare(`SELECT * FROM import_batches WHERE id = ?`).bind(batchId).first();
+  return result || null;
+}
+
+async function getBatchSummary(env, batchId) {
+  const totals = await env.DB.prepare(`
+    SELECT
+      COUNT(*) AS rows_staged,
+      SUM(CASE WHEN parse_status = 'parsed' THEN 1 ELSE 0 END) AS rows_parsed,
+      SUM(CASE WHEN parse_status != 'parsed' THEN 1 ELSE 0 END) AS rows_failed,
+      SUM(CASE WHEN TRIM(COALESCE(parse_notes, '')) != '' THEN 1 ELSE 0 END) AS rows_with_warnings,
+      COUNT(DISTINCT NULLIF(TRIM(raw_model_number), '')) AS unique_models_in_batch
+    FROM staging_schedule_rows
+    WHERE batch_id = ?
+  `).bind(batchId).first();
+
+  const actions = await env.DB.prepare(`
+    SELECT
+      SUM(CASE WHEN action = 'inserted' THEN 1 ELSE 0 END) AS catalog_inserts,
+      SUM(CASE WHEN action = 'updated' THEN 1 ELSE 0 END) AS catalog_updates,
+      SUM(CASE WHEN action = 'unchanged' THEN 1 ELSE 0 END) AS catalog_unchanged,
+      SUM(CASE WHEN action = 'duplicate_in_batch' THEN 1 ELSE 0 END) AS duplicates_in_batch
+    FROM import_model_results
+    WHERE batch_id = ?
+  `).bind(batchId).first();
+
+  return {
+    rows_read: toInt(totals?.rows_staged),
+    rows_staged: toInt(totals?.rows_staged),
+    rows_parsed: toInt(totals?.rows_parsed),
+    rows_failed: toInt(totals?.rows_failed),
+    rows_with_warnings: toInt(totals?.rows_with_warnings),
+    unique_models_in_batch: toInt(totals?.unique_models_in_batch),
+    catalog_inserts: toInt(actions?.catalog_inserts),
+    catalog_updates: toInt(actions?.catalog_updates),
+    catalog_unchanged: toInt(actions?.catalog_unchanged),
+    duplicates_in_batch: toInt(actions?.duplicates_in_batch),
+  };
+}
+
+async function getBatchIssues(env, batchId) {
+  const duplicates = await env.DB.prepare(`
+    SELECT
+      raw_model_number AS model_number,
+      COUNT(*) AS duplicate_count,
+      GROUP_CONCAT(source_row_number) AS source_row_numbers
+    FROM staging_schedule_rows
+    WHERE batch_id = ? AND NULLIF(TRIM(raw_model_number), '') IS NOT NULL
+    GROUP BY raw_model_number
+    HAVING COUNT(*) > 1
+    ORDER BY duplicate_count DESC, raw_model_number
+  `).bind(batchId).all();
+
+  const parseIssues = await env.DB.prepare(`
+    SELECT source_row_number, raw_model_number, parse_status, parse_notes
+    FROM staging_schedule_rows
+    WHERE batch_id = ?
+      AND (parse_status != 'parsed' OR TRIM(COALESCE(parse_notes, '')) != '')
+    ORDER BY source_row_number
+  `).bind(batchId).all();
+
+  const issues = [];
+  for (const row of coerceArray(duplicates.results)) {
+    issues.push({
+      type: 'duplicate_model_in_batch',
+      model_number: row.model_number,
+      count: toInt(row.duplicate_count),
+      source_row_numbers: String(row.source_row_numbers || '')
+        .split(',')
+        .map((value) => toInt(value))
+        .filter(Boolean),
+    });
+  }
+
+  const warningRows = summarizeIssueRows(coerceArray(parseIssues.results));
+  if (warningRows.length) {
+    issues.push({
+      type: 'parse_warnings',
+      rows: warningRows,
+    });
+  }
+
+  return issues;
+}
+
+function buildBatchLinks(batchId) {
+  return {
+    batch: `/api/import-batches/${batchId}`,
+    staging_rows: `/api/import-batches/${batchId}/staging-rows`,
+    catalog_results: `/api/import-batches/${batchId}/catalog-results`,
+  };
+}
+
+async function handleGetImportBatch(env, batchId) {
+  const batch = await getBatch(env, batchId);
+  if (!batch) return json({ error: 'Import batch not found.' }, 404);
+  const summary = await getBatchSummary(env, batchId);
+  const issues = await getBatchIssues(env, batchId);
+  return json({ ok: true, batch, summary, issues, links: buildBatchLinks(batchId) });
+}
+
+async function handleGetImportBatchRows(env, batchId) {
+  const batch = await getBatch(env, batchId);
+  if (!batch) return json({ error: 'Import batch not found.' }, 404);
+  const rows = await env.DB.prepare(`
+    SELECT *
+    FROM staging_schedule_rows
+    WHERE batch_id = ?
+    ORDER BY source_row_number, id
+  `).bind(batchId).all();
+  return json({ ok: true, batch, rows: coerceArray(rows.results) });
+}
+
+async function handleGetImportBatchCatalogResults(env, batchId) {
+  const batch = await getBatch(env, batchId);
+  if (!batch) return json({ error: 'Import batch not found.' }, 404);
+  const rows = await env.DB.prepare(`
+    SELECT
+      imr.id,
+      imr.batch_id,
+      imr.staging_row_id,
+      ssr.source_row_number,
+      ssr.source_descriptor,
+      ssr.raw_model_number,
+      imr.model_number,
+      imr.unit_model_id,
+      imr.action,
+      imr.reason,
+      um.family_key,
+      um.tonnage_key,
+      um.voltage_key,
+      um.aux_heat_type_key,
+      um.aux_heat_capacity_key,
+      imr.created_at
+    FROM import_model_results imr
+    JOIN staging_schedule_rows ssr ON ssr.id = imr.staging_row_id
+    LEFT JOIN unit_models_v2 um ON um.id = imr.unit_model_id
+    WHERE imr.batch_id = ?
+    ORDER BY ssr.source_row_number, imr.id
+  `).bind(batchId).all();
+  return json({ ok: true, batch, results: coerceArray(rows.results) });
+}
+
 function json(data, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { 'Content-Type': 'application/json' }
-  });
+  return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
 function normalizeText(value) {
@@ -13,12 +178,6 @@ function normalizeText(value) {
 
 function asBlank(value) {
   return value === null || value === undefined || value === '' ? '' : value;
-}
-
-function toNumber(value) {
-  if (value === null || value === undefined || value === '') return null;
-  const n = Number(String(value).replace(/,/g, '').trim());
-  return Number.isFinite(n) ? n : null;
 }
 
 function normalizeFamily(value) {
@@ -54,105 +213,27 @@ function normalizeHeatType(value) {
 function normalizeHeatCapacity(value) {
   const v = normalizeText(value).toLowerCase();
   if (!v) return '0';
-  return v.replace(/\s+/g, '').replace('mbh', '').replace('kw', '').replace('.0', '');
+  return v.replace(/\s+/g, '').replace('mbh', '').replace('.0', '');
 }
 
 function normalizeTonnage(value) {
   return String(value ?? '').trim().replace('.0', '');
 }
 
-function parseDescriptor(text) {
-  const raw = normalizeText(text);
-  const lower = raw.toLowerCase();
-
-  const tonnageMatch = raw.match(/(\d+(?:\.\d+)?)\s*[- ]?ton/i);
-  const tonnageValue = tonnageMatch ? Number(tonnageMatch[1]) : null;
-  const tonnageKey = tonnageValue !== null ? normalizeTonnage(tonnageValue) : '';
-
-  const voltageMatch = raw.match(/(208(?:\/230)?\/3|460\/3|208-3-60|460-3-60)/i);
-  const voltageLabel = voltageMatch ? voltageMatch[1].replace('-60', '') : '';
-  const voltageKey = normalizeVoltage(voltageLabel);
-
-  const isHeatPump = lower.includes('heat pump') || lower.includes(' hp ');
-  const familyKey = isHeatPump ? 'hp' : 'ac';
-  const familyLabel = isHeatPump ? 'Heat Pump' : 'AC';
-
-  let auxHeatTypeKey = 'none';
-  let auxHeatTypeLabel = 'None';
-  let auxHeatCapacityLabel = '';
-  let auxHeatCapacityKey = '0';
-
-  if (lower.includes('gas')) {
-    auxHeatTypeKey = 'gas';
-    auxHeatTypeLabel = 'Aluminum Gas Heat';
-    const gasMatch = raw.match(/(\d+(?:\.\d+)?)\s*mbh/i);
-    if (gasMatch) {
-      auxHeatCapacityLabel = `${gasMatch[1]} MBH`;
-      auxHeatCapacityKey = normalizeHeatCapacity(auxHeatCapacityLabel);
-    }
-  } else if (lower.includes('kw') || lower.includes('electric')) {
-    auxHeatTypeKey = 'electric';
-    auxHeatTypeLabel = 'Electric Heat';
-    const kwMatch = raw.match(/(\d+(?:\.\d+)?)\s*kw/i);
-    if (kwMatch) {
-      auxHeatCapacityLabel = `${kwMatch[1]} kW`;
-      auxHeatCapacityKey = normalizeHeatCapacity(auxHeatCapacityLabel);
-    }
-  }
-
-  return {
-    familyKey,
-    familyLabel,
-    efficiencyKey: 'std',
-    efficiencyLabel: 'Standard',
-    tonnageKey,
-    tonnageValue,
-    voltageKey,
-    voltageLabel,
-    auxHeatTypeKey,
-    auxHeatTypeLabel,
-    auxHeatCapacityKey,
-    auxHeatCapacityLabel
-  };
-}
-
-async function listCatalog(env, filters) {
-  const familyKey = normalizeFamily(filters.family);
-  const efficiencyKey = normalizeEfficiency(filters.efficiency);
-  const tonnageKey = normalizeTonnage(filters.tonnage);
-  const voltageKey = normalizeVoltage(filters.voltage);
-  const auxHeatTypeKey = normalizeHeatType(filters.heatType);
-  const auxHeatCapacityKey = normalizeHeatCapacity(filters.heatCapacity);
-
-  let sql = `
-SELECT m.*, d.cutsheet_url, d.accessories_url
-FROM unit_models_v2 m
-LEFT JOIN unit_documents d ON d.model_id = m.id
-WHERE 1 = 1
-`;
-  const binds = [];
-  if (filters.family) { sql += ' AND m.family_key = ?'; binds.push(familyKey); }
-  if (filters.efficiency) { sql += ' AND m.efficiency_key = ?'; binds.push(efficiencyKey); }
-  if (filters.tonnage) { sql += ' AND m.tonnage_key = ?'; binds.push(tonnageKey); }
-  if (filters.voltage) { sql += ' AND m.voltage_key = ?'; binds.push(voltageKey); }
-  if (filters.heatType) { sql += ' AND m.aux_heat_type_key = ?'; binds.push(auxHeatTypeKey); }
-  if (filters.heatCapacity || auxHeatTypeKey !== 'none') { sql += ' AND m.aux_heat_capacity_key = ?'; binds.push(auxHeatCapacityKey); }
-  sql += ' ORDER BY m.family_label, m.tonnage_value, m.model_number';
-  const stmt = env.DB.prepare(sql).bind(...binds);
-  const result = await stmt.all();
-  return result.results || [];
-}
-
-async function findMatchingModel(env, unit) {
-  const matches = await listCatalog(env, {
-    family: unit.family,
-    efficiency: unit.efficiency,
-    tonnage: unit.tonnage,
-    voltage: unit.voltage,
-    heatType: unit.heatType,
-    heatCapacity: unit.heatCapacity || ''
-  });
-  return matches[0] || null;
+function buildSelectionCode(unit) {
+  const familyCode = normalizeFamily(unit.family) === 'hp' ? 'HP' : 'AC';
+  const efficiencyCode = normalizeEfficiency(unit.efficiency) === 'high' ? 'HI' : 'STD';
+  const tonnageCode = String(unit.tonnage).replace('.', 'P');
+  const voltageCode = normalizeVoltage(unit.voltage) === '460-3' ? '460' : '208';
+  const heatTypeKey = normalizeHeatType(unit.heatType);
+  const heatCode = heatTypeKey === 'none'
+    ? 'NOHEAT'
+    : heatTypeKey === 'electric'
+      ? `ELEC-${normalizeHeatCapacity(unit.heatCapacity)}`
+      : `GAS-${normalizeHeatCapacity(unit.heatCapacity)}MBH`;
+  const reheatCode = unit.hotGasReheat ? 'HGRH' : 'NOHGRH';
+  const econCode = unit.economizer === 'barometric' ? 'ECO-BARO' : unit.economizer === 'powered' ? 'ECO-PE' : 'NOECO';
+  return `${familyCode}-${efficiencyCode}-${tonnageCode}-${voltageCode}-${heatCode}-${reheatCode}-${econCode}`;
 }
 
 function optionSummary(unit, match) {
@@ -162,11 +243,6 @@ function optionSummary(unit, match) {
     unit.economizer === 'powered' ? 'Economizer w/ Powered Exhaust' : null,
     unit.curb ? 'Curb' : null
   ].filter(Boolean).join(', ');
-}
-
-function joinSlash(a, b) {
-  const parts = [asBlank(a), asBlank(b)].filter(v => v !== '');
-  return parts.length ? parts.join(' / ') : '';
 }
 
 const COL = {
@@ -209,271 +285,158 @@ async function getTemplateWorkbook(env) {
   return workbook;
 }
 
+async function listCatalog(env, filters = {}) {
+  let sql = `
+    SELECT m.*, d.cut_sheet_url, d.accessories_url, d.wiring_url, d.iom_url
+    FROM unit_models m
+    LEFT JOIN unit_documents d ON d.model_id = m.id
+    WHERE 1 = 1
+  `;
+  const binds = [];
+
+  if (filters.family) {
+    sql += ' AND m.family = ?';
+    binds.push(filters.family);
+  }
+  if (filters.efficiency) {
+    sql += ' AND m.efficiency = ?';
+    binds.push(filters.efficiency);
+  }
+  if (filters.tonnage !== '' && filters.tonnage !== null && filters.tonnage !== undefined) {
+    sql += ' AND m.tonnage = ?';
+    binds.push(filters.tonnage);
+  }
+  if (filters.voltage) {
+    sql += ' AND m.voltage = ?';
+    binds.push(filters.voltage);
+  }
+  if (filters.heatType) {
+    sql += ' AND m.heat_type = ?';
+    binds.push(filters.heatType);
+  }
+  if (filters.heatCapacity && normalizeHeatType(filters.heatType) !== 'none') {
+    sql += ' AND m.heat_capacity = ?';
+    binds.push(filters.heatCapacity);
+  }
+
+  sql += ' ORDER BY m.model_number';
+  const stmt = env.DB.prepare(sql).bind(...binds);
+  const result = await stmt.all();
+  return result.results || [];
+}
+
+async function findMatchingModel(env, unit) {
+  const matches = await listCatalog(env, {
+    family: normalizeFamily(unit.family),
+    efficiency: normalizeEfficiency(unit.efficiency),
+    tonnage: unit.tonnage,
+    voltage: normalizeVoltage(unit.voltage),
+    heatType: normalizeHeatType(unit.heatType),
+    heatCapacity: normalizeHeatCapacity(unit.heatCapacity),
+  });
+  return matches[0] || null;
+}
+
+function joinSlash(a, b) {
+  const parts = [asBlank(a), asBlank(b)].filter((v) => v !== '');
+  return parts.length ? parts.join('/') : '';
+}
+
+function buildResolvedScheduleRow(unit, match, index = 0) {
+  return {
+    tag: normalizeText(unit.tag) || `RTU-${index + 1}`,
+    areaServed: asBlank(unit.areaServed),
+    manufacturer: asBlank(match?.brand || 'Tempmaster'),
+    modelNumber: asBlank(match?.model_number || buildSelectionCode(unit)),
+    nominalTons: asBlank(match?.tonnage || unit.tonnage),
+    unitType: asBlank(match?.unit_type || unit.family),
+    unitEer: asBlank(match?.unit_eer),
+    seerIeerr: asBlank(match?.seer_ieer),
+    supplyCfm: asBlank(match?.cooling_cfm),
+    supplyEsp: '',
+    supplyQty: 1,
+    supplyBhp: '',
+    supplyHp: '',
+    supplyRpm: '',
+    coolingEat: joinSlash(match?.cooling_eat_db, match?.cooling_eat_wb),
+    coolingLat: joinSlash(match?.cooling_lat_db, match?.cooling_lat_wb),
+    coolingSensible: asBlank(match?.cooling_sensible_capacity_mbh),
+    coolingTotal: asBlank(match?.cooling_total_capacity_mbh),
+    heatingCfm: asBlank(match?.heating_cfm || match?.cooling_cfm),
+    heatingEat: asBlank(match?.heating_eat_f),
+    heatingLat: asBlank(match?.heating_lat_f),
+    heatingInput: asBlank(match?.heating_capacity_mbtu || unit.heatCapacity),
+    heatingOutput: asBlank(match?.heating_output_capacity || ''),
+    voltPh: asBlank(match?.voltage || unit.voltage),
+    mca: asBlank(match?.mca),
+    mocp: asBlank(match?.mocp),
+    weight: asBlank(match?.operating_weight_lbs),
+    remarks: optionSummary(unit, match),
+    selectionCode: buildSelectionCode(unit),
+    matchFound: Boolean(match),
+    cutSheetUrl: asBlank(match?.cut_sheet_url),
+    accessoriesUrl: asBlank(match?.accessories_url),
+    wiringUrl: asBlank(match?.wiring_url),
+    iomUrl: asBlank(match?.iom_url),
+  };
+}
+
+async function resolveScheduleRows(env, units) {
+  const rows = [];
+  for (let index = 0; index < units.length; index += 1) {
+    const unit = units[index];
+    const match = await findMatchingModel(env, unit);
+    rows.push(buildResolvedScheduleRow(unit, match, index));
+  }
+  return rows;
+}
+
 async function createWorkbook(env, units) {
   const workbook = await getTemplateWorkbook(env);
   const worksheet = workbook.getWorksheet('Table 1') || workbook.worksheets[0];
   const templateRowNumber = 4;
   const baseRow = worksheet.getRow(templateRowNumber);
+  const rows = await resolveScheduleRows(env, units);
 
-  for (let index = 0; index < units.length; index += 1) {
-    const unit = units[index];
+  for (let index = 0; index < rows.length; index += 1) {
+    const scheduleRow = rows[index];
     const rowNumber = templateRowNumber + index;
     if (rowNumber > templateRowNumber) worksheet.duplicateRow(templateRowNumber, 1, true);
     const row = worksheet.getRow(rowNumber);
-    const match = await findMatchingModel(env, unit);
-
     row.height = baseRow.height;
-    row.getCell(COL.tag).value = normalizeText(unit.tag) || `RTU-${index + 1}`;
-    row.getCell(COL.areaServed).value = asBlank(unit.areaServed);
-    row.getCell(COL.manufacturer).value = asBlank(match?.brand || 'H&H Trecho');
-    row.getCell(COL.modelNumber).value = asBlank(match?.model_number || 'NO MATCH');
-    row.getCell(COL.nominalTons).value = asBlank(match?.tonnage_value || unit.tonnage);
-    row.getCell(COL.unitType).value = asBlank(match?.unit_type || unit.family);
-    row.getCell(COL.unitEer).value = asBlank(match?.unit_eer);
-    row.getCell(COL.seerIeerr).value = asBlank(match?.seer_ieer);
-    row.getCell(COL.supplyCfm).value = asBlank(match?.supply_airflow_cfm);
-    row.getCell(COL.supplyEsp).value = asBlank(match?.supply_fan_esp_in_wg);
-    row.getCell(COL.supplyQty).value = asBlank(match?.supply_fan_qty || 1);
-    row.getCell(COL.supplyBhp).value = asBlank(match?.supply_fan_bhp);
-    row.getCell(COL.supplyHp).value = asBlank(match?.supply_fan_hp);
-    row.getCell(COL.supplyRpm).value = asBlank(match?.supply_fan_rpm);
-    row.getCell(COL.coolingEat).value = joinSlash(match?.cooling_eat_db, match?.cooling_eat_wb);
-    row.getCell(COL.coolingLat).value = joinSlash(match?.cooling_lat_db, match?.cooling_lat_wb);
-    row.getCell(COL.coolingSensible).value = asBlank(match?.cooling_sensible_capacity_mbh);
-    row.getCell(COL.coolingTotal).value = asBlank(match?.cooling_total_capacity_mbh);
-    row.getCell(COL.heatingCfm).value = asBlank(match?.supply_airflow_cfm);
-    row.getCell(COL.heatingEat).value = asBlank(match?.heating_eat_f);
-    row.getCell(COL.heatingLat).value = asBlank(match?.heating_lat_f);
-    row.getCell(COL.heatingInput).value = asBlank(match?.heating_input_capacity_mbh || unit.heatCapacity);
-    row.getCell(COL.heatingOutput).value = asBlank(match?.heating_output_capacity_mbh);
-    row.getCell(COL.voltPh).value = asBlank(match?.voltage_label || unit.voltage);
-    row.getCell(COL.mca).value = asBlank(match?.mca);
-    row.getCell(COL.mocp).value = asBlank(match?.mocp);
-    row.getCell(COL.weight).value = asBlank(match?.operating_weight_lbs);
-    row.getCell(COL.remarks).value = optionSummary(unit, match);
+
+    row.getCell(COL.tag).value = scheduleRow.tag;
+    row.getCell(COL.areaServed).value = scheduleRow.areaServed;
+    row.getCell(COL.manufacturer).value = scheduleRow.manufacturer;
+    row.getCell(COL.modelNumber).value = scheduleRow.modelNumber;
+    row.getCell(COL.nominalTons).value = scheduleRow.nominalTons;
+    row.getCell(COL.unitType).value = scheduleRow.unitType;
+    row.getCell(COL.unitEer).value = scheduleRow.unitEer;
+    row.getCell(COL.seerIeerr).value = scheduleRow.seerIeerr;
+    row.getCell(COL.supplyCfm).value = scheduleRow.supplyCfm;
+    row.getCell(COL.supplyEsp).value = scheduleRow.supplyEsp;
+    row.getCell(COL.supplyQty).value = scheduleRow.supplyQty;
+    row.getCell(COL.supplyBhp).value = scheduleRow.supplyBhp;
+    row.getCell(COL.supplyHp).value = scheduleRow.supplyHp;
+    row.getCell(COL.supplyRpm).value = scheduleRow.supplyRpm;
+    row.getCell(COL.coolingEat).value = scheduleRow.coolingEat;
+    row.getCell(COL.coolingLat).value = scheduleRow.coolingLat;
+    row.getCell(COL.coolingSensible).value = scheduleRow.coolingSensible;
+    row.getCell(COL.coolingTotal).value = scheduleRow.coolingTotal;
+    row.getCell(COL.heatingCfm).value = scheduleRow.heatingCfm;
+    row.getCell(COL.heatingEat).value = scheduleRow.heatingEat;
+    row.getCell(COL.heatingLat).value = scheduleRow.heatingLat;
+    row.getCell(COL.heatingInput).value = scheduleRow.heatingInput;
+    row.getCell(COL.heatingOutput).value = scheduleRow.heatingOutput;
+    row.getCell(COL.voltPh).value = scheduleRow.voltPh;
+    row.getCell(COL.mca).value = scheduleRow.mca;
+    row.getCell(COL.mocp).value = scheduleRow.mocp;
+    row.getCell(COL.weight).value = scheduleRow.weight;
+    row.getCell(COL.remarks).value = scheduleRow.remarks;
     row.commit();
   }
 
   return workbook.xlsx.writeBuffer();
-}
-
-async function parseDsSchedule(arrayBuffer) {
-  const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.load(arrayBuffer);
-  const worksheet = workbook.getWorksheet('Schedule') || workbook.worksheets[0];
-  const rows = [];
-
-  for (let rowNumber = 8; rowNumber <= worksheet.rowCount; rowNumber += 1) {
-    const row = worksheet.getRow(rowNumber);
-    const descriptor = normalizeText(row.getCell(1).value);
-    const modelNumber = normalizeText(row.getCell(2).value);
-    if (!descriptor && !modelNumber) continue;
-
-    const parsed = parseDescriptor(descriptor);
-    rows.push({
-      sourceRowNumber: rowNumber,
-      descriptor,
-      modelNumber,
-      brand: normalizeText(row.getCell(3).value),
-      qty: normalizeText(row.getCell(4).value),
-      airflowCfm: normalizeText(row.getCell(5).value),
-      supplyFanHp: normalizeText(row.getCell(7).value),
-      supplyFanEsp: normalizeText(row.getCell(8).value),
-      supplyFanRpm: normalizeText(row.getCell(10).value),
-      coolingTotalMbh: normalizeText(row.getCell(17).value),
-      coolingSensibleMbh: normalizeText(row.getCell(18).value),
-      unitEer: normalizeText(row.getCell(19).value),
-      seerIeerr: normalizeText(row.getCell(20).value),
-      refrigerant: normalizeText(row.getCell(23).value),
-      heatingInputMbh: normalizeText(row.getCell(28).value),
-      heatingOutputMbh: normalizeText(row.getCell(27).value),
-      voltage: normalizeText(row.getCell(30).value),
-      mca: normalizeText(row.getCell(31).value),
-      mocp: normalizeText(row.getCell(33).value),
-      weightLbs: normalizeText(row.getCell(35).value),
-      remarks: normalizeText(row.getCell(36).value),
-      ...parsed
-    });
-  }
-
-  return { worksheetName: worksheet.name, rows };
-}
-
-async function createImportBatch(env, meta) {
-  const stmt = env.DB.prepare(`
-    INSERT INTO import_batches (source_filename, source_sheet, vendor, product_line, notes)
-    VALUES (?, ?, ?, ?, ?)
-    RETURNING id
-  `).bind(meta.sourceFilename, meta.sourceSheet, meta.vendor, meta.productLine, meta.notes || '');
-  const result = await stmt.first();
-  return result?.id;
-}
-
-async function insertStagingRow(env, batchId, row) {
-  const stmt = env.DB.prepare(`
-    INSERT INTO staging_schedule_rows (
-      batch_id, source_row_number, source_descriptor,
-      raw_model_number, raw_brand, raw_qty, raw_airflow_cfm,
-      raw_supply_fan_hp, raw_supply_fan_esp_in_wg, raw_supply_fan_rpm,
-      raw_cooling_total_mbh, raw_cooling_sensible_mbh, raw_unit_eer, raw_seer_ieer,
-      raw_refrigerant, raw_heating_input_mbh, raw_heating_output_mbh,
-      raw_voltage, raw_mca, raw_mocp, raw_weight_lbs, raw_remarks,
-      family_key, family_label, efficiency_key, efficiency_label,
-      tonnage_key, tonnage_value, voltage_key, voltage_label,
-      aux_heat_type_key, aux_heat_type_label, aux_heat_capacity_key, aux_heat_capacity_label,
-      parse_status, parse_notes
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(
-    batchId,
-    row.sourceRowNumber,
-    row.descriptor,
-    row.modelNumber,
-    row.brand,
-    row.qty,
-    row.airflowCfm,
-    row.supplyFanHp,
-    row.supplyFanEsp,
-    row.supplyFanRpm,
-    row.coolingTotalMbh,
-    row.coolingSensibleMbh,
-    row.unitEer,
-    row.seerIeerr,
-    row.refrigerant,
-    row.heatingInputMbh,
-    row.heatingOutputMbh,
-    row.voltage,
-    row.mca,
-    row.mocp,
-    row.weightLbs,
-    row.remarks,
-    row.familyKey,
-    row.familyLabel,
-    row.efficiencyKey,
-    row.efficiencyLabel,
-    row.tonnageKey,
-    row.tonnageValue,
-    row.voltageKey,
-    row.voltageLabel,
-    row.auxHeatTypeKey,
-    row.auxHeatTypeLabel,
-    row.auxHeatCapacityKey,
-    row.auxHeatCapacityLabel,
-    row.modelNumber ? 'parsed' : 'review',
-    row.modelNumber ? '' : 'Missing model number'
-  );
-  await stmt.run();
-}
-
-async function upsertUnitModelV2(env, batchId, sheetName, row) {
-  const stmt = env.DB.prepare(`
-    INSERT INTO unit_models_v2 (
-      family_key, family_label, efficiency_key, efficiency_label,
-      tonnage_key, tonnage_value, voltage_key, voltage_label,
-      aux_heat_type_key, aux_heat_type_label, aux_heat_capacity_key, aux_heat_capacity_label,
-      brand, model_number, unit_type, unit_eer, seer_ieer,
-      supply_airflow_cfm, supply_fan_qty, supply_fan_hp, supply_fan_rpm, supply_fan_esp_in_wg,
-      cooling_sensible_capacity_mbh, cooling_total_capacity_mbh,
-      heating_input_capacity_mbh, heating_output_capacity_mbh,
-      refrigerant_type, mca, mocp, operating_weight_lbs, remarks_default,
-      source_batch_id, source_sheet, source_row_number, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(family_key, efficiency_key, tonnage_key, voltage_key, aux_heat_type_key, aux_heat_capacity_key, model_number)
-    DO UPDATE SET
-      family_label = excluded.family_label,
-      efficiency_label = excluded.efficiency_label,
-      tonnage_value = excluded.tonnage_value,
-      voltage_label = excluded.voltage_label,
-      aux_heat_type_label = excluded.aux_heat_type_label,
-      aux_heat_capacity_label = excluded.aux_heat_capacity_label,
-      brand = excluded.brand,
-      unit_type = excluded.unit_type,
-      unit_eer = excluded.unit_eer,
-      seer_ieer = excluded.seer_ieer,
-      supply_airflow_cfm = excluded.supply_airflow_cfm,
-      supply_fan_qty = excluded.supply_fan_qty,
-      supply_fan_hp = excluded.supply_fan_hp,
-      supply_fan_rpm = excluded.supply_fan_rpm,
-      supply_fan_esp_in_wg = excluded.supply_fan_esp_in_wg,
-      cooling_sensible_capacity_mbh = excluded.cooling_sensible_capacity_mbh,
-      cooling_total_capacity_mbh = excluded.cooling_total_capacity_mbh,
-      heating_input_capacity_mbh = excluded.heating_input_capacity_mbh,
-      heating_output_capacity_mbh = excluded.heating_output_capacity_mbh,
-      refrigerant_type = excluded.refrigerant_type,
-      mca = excluded.mca,
-      mocp = excluded.mocp,
-      operating_weight_lbs = excluded.operating_weight_lbs,
-      remarks_default = excluded.remarks_default,
-      source_batch_id = excluded.source_batch_id,
-      source_sheet = excluded.source_sheet,
-      source_row_number = excluded.source_row_number,
-      updated_at = CURRENT_TIMESTAMP
-  `).bind(
-    row.familyKey,
-    row.familyLabel,
-    row.efficiencyKey,
-    row.efficiencyLabel,
-    row.tonnageKey,
-    row.tonnageValue,
-    row.voltageKey,
-    row.voltageLabel,
-    row.auxHeatTypeKey,
-    row.auxHeatTypeLabel,
-    row.auxHeatCapacityKey,
-    row.auxHeatCapacityLabel,
-    row.brand,
-    row.modelNumber,
-    row.familyLabel,
-    toNumber(row.unitEer),
-    row.seerIeerr,
-    toNumber(row.airflowCfm),
-    toNumber(row.qty) || 1,
-    toNumber(row.supplyFanHp),
-    toNumber(row.supplyFanRpm),
-    toNumber(row.supplyFanEsp),
-    toNumber(row.coolingSensibleMbh),
-    toNumber(row.coolingTotalMbh),
-    toNumber(row.heatingInputMbh),
-    toNumber(row.heatingOutputMbh),
-    row.refrigerant,
-    row.mca,
-    row.mocp,
-    toNumber(row.weightLbs),
-    row.remarks,
-    batchId,
-    sheetName,
-    row.sourceRowNumber
-  );
-  await stmt.run();
-}
-
-async function importDsSchedule(env, arrayBuffer, sourceFilename) {
-  const parsed = await parseDsSchedule(arrayBuffer);
-  const batchId = await createImportBatch(env, {
-    sourceFilename,
-    sourceSheet: parsed.worksheetName,
-    vendor: 'Tempmaster',
-    productLine: 'DS Commercial',
-    notes: 'Imported from DS Commercial workbook'
-  });
-
-  let staged = 0;
-  let upserted = 0;
-
-  for (const row of parsed.rows) {
-    await insertStagingRow(env, batchId, row);
-    staged += 1;
-    if (row.modelNumber && row.tonnageKey && row.voltageKey) {
-      await upsertUnitModelV2(env, batchId, parsed.worksheetName, row);
-      upserted += 1;
-    }
-  }
-
-  return {
-    batchId,
-    worksheet: parsed.worksheetName,
-    staged,
-    upserted
-  };
 }
 
 export default {
@@ -482,29 +445,41 @@ export default {
 
     if (request.method === 'GET' && url.pathname === '/api/catalog') {
       const filters = {
-        family: url.searchParams.get('family') || '',
-        efficiency: url.searchParams.get('efficiency') || '',
-        tonnage: url.searchParams.get('tonnage') || '',
-        voltage: url.searchParams.get('voltage') || '',
-        heatType: url.searchParams.get('heatType') || '',
-        heatCapacity: url.searchParams.get('heatCapacity') || ''
+        family: normalizeFamily(url.searchParams.get('family')),
+        efficiency: normalizeEfficiency(url.searchParams.get('efficiency')),
+        tonnage: url.searchParams.get('tonnage'),
+        voltage: normalizeVoltage(url.searchParams.get('voltage')),
+        heatType: normalizeHeatType(url.searchParams.get('heatType')),
+        heatCapacity: normalizeHeatCapacity(url.searchParams.get('heatCapacity')),
       };
       const results = await listCatalog(env, filters);
       return json({ items: results });
     }
 
-    if (request.method === 'POST' && url.pathname === '/api/import-ds-schedule') {
+    if (request.method === 'POST' && url.pathname === '/api/preview-schedule') {
       try {
-        const formData = await request.formData();
-        const file = formData.get('file');
-        if (!file || typeof file.arrayBuffer !== 'function') {
-          return json({ error: 'Upload a file in form-data under key "file".' }, 400);
-        }
-        const result = await importDsSchedule(env, await file.arrayBuffer(), file.name || 'upload.xlsx');
-        return json(result, 200);
+        const payload = await request.json();
+        const units = Array.isArray(payload?.units) ? payload.units : [];
+        const rows = await resolveScheduleRows(env, units);
+        return json({ rows });
       } catch (error) {
-        return json({ error: error.message || 'Import failed' }, 500);
+        return new Response(error.message || 'Preview failed', { status: 500 });
       }
+    }
+
+    const batchMatch = url.pathname.match(/^\/api\/import-batches\/(\d+)$/);
+    if (request.method === 'GET' && batchMatch) {
+      return handleGetImportBatch(env, Number(batchMatch[1]));
+    }
+
+    const batchRowsMatch = url.pathname.match(/^\/api\/import-batches\/(\d+)\/staging-rows$/);
+    if (request.method === 'GET' && batchRowsMatch) {
+      return handleGetImportBatchRows(env, Number(batchRowsMatch[1]));
+    }
+
+    const batchCatalogMatch = url.pathname.match(/^\/api\/import-batches\/(\d+)\/catalog-results$/);
+    if (request.method === 'GET' && batchCatalogMatch) {
+      return handleGetImportBatchCatalogResults(env, Number(batchCatalogMatch[1]));
     }
 
     if (request.method === 'POST' && url.pathname === '/api/export-schedule') {
@@ -515,8 +490,8 @@ export default {
         return new Response(file, {
           headers: {
             'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            'Content-Disposition': 'attachment; filename="SSR-Schedule-Export.xlsx"'
-          }
+            'Content-Disposition': 'attachment; filename="SSR-Schedule-Export.xlsx"',
+          },
         });
       } catch (error) {
         return new Response(error.message || 'Export failed', { status: 500 });
@@ -524,5 +499,5 @@ export default {
     }
 
     return env.ASSETS.fetch(request);
-  }
+  },
 };
