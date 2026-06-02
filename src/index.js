@@ -778,14 +778,18 @@ export default {
       }
     }
 
-    if (request.method === 'POST' && url.pathname === '/api/preview-schedule') {
+        if (request.method === 'POST' && url.pathname === '/api/preview-schedule') {
       try {
         const payload = await request.json();
         const units = Array.isArray(payload?.units) ? payload.units : [];
         const rows = await resolveScheduleRows(env, units);
         return json({ rows });
       } catch (error) {
-        return new Response(error.message || 'Preview failed', { status: 500 });
+        console.error('preview-schedule error', error);
+        return json(
+          { error: error.message || 'Preview failed' },
+          500
+        );
       }
     }
 
