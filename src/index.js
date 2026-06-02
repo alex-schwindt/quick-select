@@ -660,15 +660,43 @@ async function listCatalog(env, filters = {}) {
 }
 
 async function findMatchingModel(env, unit) {
-  const matches = await listCatalog(env, {
-    family: normalizeFamily(unit.family),
-    efficiency: normalizeEfficiency(unit.efficiency),
-    tonnage: unit.tonnage,
-    voltage: normalizeVoltage(unit.voltage),
-    heatType: normalizeHeatType(unit.heatType),
-    heatCapacity: normalizeHeatCapacity(unit.heatCapacity),
-  });
-  return matches[0] || null;
+  const family = normalizeFamily(unit.family);
+  const tonnage = String(unit.tonnage);
+  const voltage = normalizeVoltage(unit.voltage);
+  const heatType = normalizeHeatType(unit.heatType);
+  const heatCapacity = normalizeHeatCapacity(unit.heatCapacity || '');
+
+  const exact = await env.DB.prepare(`
+    SELECT *
+    FROM unit_models_v2
+    WHERE family_label = ?
+      AND CAST(tonnage_value AS TEXT) = ?
+      AND voltage_label = ?
+      AND aux_heat_type_label = ?
+      AND aux_heat_capacity_key = ?
+    ORDER BY model_number
+    LIMIT 1
+  `).bind(
+    family,
+    tonnage,
+    voltage,
+    heatType,
+    heatType === 'None' ? '' : heatCapacity
+  ).first();
+
+  if (exact) return exact;
+
+  const fallbackNoEfficiency = await env.DB.prepare(`
+    SELECT *
+    FROM unit_models_v2
+    WHERE family_label = ?
+      AND CAST(tonnage_value AS TEXT) = ?
+      AND voltage_label = ?
+    ORDER BY model_number
+    LIMIT 1
+  `).bind(family, tonnage, voltage).first();
+
+  return fallbackNoEfficiency || null;
 }
 
 function buildResolvedScheduleRow(unit, match, index = 0) {
