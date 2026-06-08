@@ -241,7 +241,7 @@ function findColumnByAliases(rawHeaderMap, aliases) {
 }
 
 function buildColumnMap(worksheet) {
-  const rawHeaderMap = buildRawHeaderMap(worksheet, [3, 4, 5]);
+  const rawHeaderMap = buildRawHeaderMap(worksheet, [6, 7]);
 
   const aliases = {
     descriptor: [
