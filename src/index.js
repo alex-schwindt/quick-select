@@ -158,6 +158,203 @@ function getCellValue(row, index) {
   return normalizeText(value);
 }
 
+function slugHeader(text) {
+  return normalizeText(text)
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/#/g, ' number ')
+    .replace(/\//g, ' ')
+    .replace(/[\.\(\)\-]+/g, ' ')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .replace(/_+/g, '_');
+}
+
+function fillMergedHeaderRow(values) {
+  const filled = [];
+  let current = '';
+  for (const value of values) {
+    const text = normalizeText(value);
+    if (text) current = text;
+    filled.push(current);
+  }
+  return filled;
+}
+
+function uniqueStrings(values) {
+  const out = [];
+  const seen = new Set();
+  for (const value of values) {
+    const text = normalizeText(value);
+    if (!text) continue;
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+  }
+  return out;
+}
+
+function buildHeaderLayers(worksheet, headerRows = [3, 4, 5]) {
+  const maxCol = worksheet.columnCount || 0;
+  return headerRows.map((rowNumber) => {
+    const row = worksheet.getRow(rowNumber);
+    const raw = [];
+    for (let col = 1; col <= maxCol; col += 1) {
+      raw.push(getCellValue(row, col));
+    }
+    return fillMergedHeaderRow(raw);
+  });
+}
+
+function buildRawHeaderMap(worksheet, headerRows = [3, 4, 5]) {
+  const layers = buildHeaderLayers(worksheet, headerRows);
+  const maxCol = worksheet.columnCount || 0;
+  const byKey = {};
+  const byCol = {};
+
+  for (let col = 1; col <= maxCol; col += 1) {
+    const parts = uniqueStrings(layers.map((layer) => layer[col - 1]));
+    const key = slugHeader(parts.join(' '));
+    if (!key) continue;
+    byCol[col] = { key, parts };
+    if (!(key in byKey)) byKey[key] = col;
+  }
+
+  return { byKey, byCol, headerRows };
+}
+
+function findColumnByAliases(rawHeaderMap, aliases) {
+  for (const alias of aliases) {
+    const key = slugHeader(alias);
+    if (rawHeaderMap.byKey[key]) return rawHeaderMap.byKey[key];
+  }
+
+  const entries = Object.entries(rawHeaderMap.byKey);
+  for (const alias of aliases) {
+    const aliasKey = slugHeader(alias);
+    const found = entries.find(([key]) => key.includes(aliasKey) || aliasKey.includes(key));
+    if (found) return found[1];
+  }
+
+  return null;
+}
+
+function buildColumnMap(worksheet) {
+  const rawHeaderMap = buildRawHeaderMap(worksheet, [3, 4, 5]);
+
+  const aliases = {
+    descriptor: [
+      'tag',
+      'tag number',
+    ],
+    model_number: [
+      'model number',
+    ],
+    brand: [
+      'brand',
+    ],
+    qty: [
+      'qty',
+      'quantity',
+    ],
+    airflow_cfm: [
+      'supply air blower airflow cfm',
+      'airflow cfm',
+    ],
+    supply_fan_hp: [
+      'supply air blower hp',
+      'hp',
+    ],
+    supply_fan_esp_in_wg: [
+      'supply air blower esp iwg',
+      'esp iwg',
+      'esp in wg',
+    ],
+    supply_fan_rpm: [
+      'supply air blower blwr rpm',
+      'blwr rpm',
+      'blower rpm',
+    ],
+    cooling_total_mbh: [
+      'cooling capacity mbh total',
+      'cooling total',
+      'total capacity mbh',
+    ],
+    cooling_sensible_mbh: [
+      'cooling capacity mbh sens',
+      'cooling sensible',
+      'sensible capacity mbh',
+    ],
+    unit_eer: [
+      'cooling eer',
+      'eer',
+    ],
+    seer_ieer: [
+      'cooling seerieer',
+      'seerieer',
+      'seer ieer',
+    ],
+    refrigerant: [
+      'cooling refrig erant',
+      'refrigerant',
+    ],
+    heating_input_mbh: [
+      'heat pump ratings mbh',
+      'heating capacity mbh total',
+      'heating mbh',
+      'mbh',
+    ],
+    heating_output_mbh: [
+      'heat pump ratings cop',
+      'heating output',
+      'cop',
+    ],
+    voltage: [
+      'electrical voltage',
+      'voltage',
+    ],
+    mca: [
+      'electrical mca',
+      'mca',
+    ],
+    mocp: [
+      'electrical max fuse',
+      'max fuse',
+      'mocp',
+      'min fuse',
+    ],
+    weight_lbs: [
+      'electrical weight2',
+      'weight2',
+      'weight',
+      'operating weight lbs',
+    ],
+    remarks: [
+      'remarks',
+    ],
+  };
+
+  const map = {};
+  for (const [field, fieldAliases] of Object.entries(aliases)) {
+    map[field] = findColumnByAliases(rawHeaderMap, fieldAliases);
+  }
+
+  const required = ['descriptor', 'model_number', 'brand', 'qty', 'voltage', 'mca', 'weight_lbs'];
+  const missing = required.filter((field) => !map[field]);
+
+  return {
+    columns: map,
+    rawHeaderMap,
+    missing,
+  };
+}
+
+function getMappedCellValue(row, columnMap, fieldName) {
+  const col = columnMap.columns[fieldName];
+  return col ? getCellValue(row, col) : '';
+}
+
 async function loadWorkbookFromSource(env, sourceFilename) {
   const r2Object = await env.TEMPLATES.get(sourceFilename);
   if (r2Object) {
@@ -393,14 +590,20 @@ async function stageDsCommercialWorkbook(env, payload) {
 
   const batchId = await insertBatch(env, payload);
   const stagedRows = [];
+  const columnMap = buildColumnMap(worksheet);
+
+  if (columnMap.missing.length) {
+    throw new Error(`Could not identify required columns from workbook headers: ${columnMap.missing.join(', ')}`);
+  }
 
   worksheet.eachRow((row, rowNumber) => {
-    const descriptor = getCellValue(row, 1);
-    const modelNumber = getCellValue(row, 2);
-    const brand = getCellValue(row, 3);
-    const qty = getCellValue(row, 4);
+    const descriptor = getMappedCellValue(row, columnMap, 'descriptor');
+    const modelNumber = getMappedCellValue(row, columnMap, 'model_number');
+    const brand = getMappedCellValue(row, columnMap, 'brand');
+    const qty = getMappedCellValue(row, columnMap, 'qty');
 
-    if (!descriptor || descriptor.toLowerCase() === 'tag #' || modelNumber.toLowerCase() === 'model number') return;
+    if (!descriptor || /^tag\b/i.test(descriptor)) return;
+    if (/^model number$/i.test(modelNumber)) return;
     if (!/^\d+(?:\.\d+)?-?ton/i.test(descriptor.replace(/\s+/g, ''))) return;
     if (!modelNumber) return;
 
@@ -410,22 +613,22 @@ async function stageDsCommercialWorkbook(env, payload) {
       raw_model_number: modelNumber,
       raw_brand: brand,
       raw_qty: qty,
-      raw_airflow_cfm: getCellValue(row, 5),
-      raw_supply_fan_hp: getCellValue(row, 7),
-      raw_supply_fan_esp_in_wg: getCellValue(row, 8),
-      raw_supply_fan_rpm: getCellValue(row, 9),
-      raw_cooling_total_mbh: getCellValue(row, 16),
-      raw_cooling_sensible_mbh: getCellValue(row, 17),
-      raw_unit_eer: getCellValue(row, 18),
-      raw_seer_ieer: getCellValue(row, 19),
-      raw_refrigerant: getCellValue(row, 20),
-      raw_heating_input_mbh: getCellValue(row, 22),
-      raw_heating_output_mbh: getCellValue(row, 23),
-      raw_voltage: getCellValue(row, 24),
-      raw_mca: getCellValue(row, 25),
-      raw_mocp: getCellValue(row, 26),
-      raw_weight_lbs: getCellValue(row, 28),
-      raw_remarks: getCellValue(row, 29),
+      raw_airflow_cfm: getMappedCellValue(row, columnMap, 'airflow_cfm'),
+      raw_supply_fan_hp: getMappedCellValue(row, columnMap, 'supply_fan_hp'),
+      raw_supply_fan_esp_in_wg: getMappedCellValue(row, columnMap, 'supply_fan_esp_in_wg'),
+      raw_supply_fan_rpm: getMappedCellValue(row, columnMap, 'supply_fan_rpm'),
+      raw_cooling_total_mbh: getMappedCellValue(row, columnMap, 'cooling_total_mbh'),
+      raw_cooling_sensible_mbh: getMappedCellValue(row, columnMap, 'cooling_sensible_mbh'),
+      raw_unit_eer: getMappedCellValue(row, columnMap, 'unit_eer'),
+      raw_seer_ieer: getMappedCellValue(row, columnMap, 'seer_ieer'),
+      raw_refrigerant: getMappedCellValue(row, columnMap, 'refrigerant'),
+      raw_heating_input_mbh: getMappedCellValue(row, columnMap, 'heating_input_mbh'),
+      raw_heating_output_mbh: getMappedCellValue(row, columnMap, 'heating_output_mbh'),
+      raw_voltage: getMappedCellValue(row, columnMap, 'voltage'),
+      raw_mca: getMappedCellValue(row, columnMap, 'mca'),
+      raw_mocp: getMappedCellValue(row, columnMap, 'mocp'),
+      raw_weight_lbs: getMappedCellValue(row, columnMap, 'weight_lbs'),
+      raw_remarks: getMappedCellValue(row, columnMap, 'remarks'),
       ...parseDescriptor(descriptor),
       parse_status: 'parsed',
       parse_notes: null,
