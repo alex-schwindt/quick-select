@@ -905,41 +905,52 @@ async function findMatchingImportedRow(env, unit) {
 }
 
 function buildResolvedScheduleRow(unit, match, index = 0) {
+  const unitType = asBlank(match?.unittype || unit.family);
+  const isHeatPump = normalizeFamily(unitType) === 'Heat Pump';
+
   return {
     tag: normalizeText(unit.tag) || `RTU-${index + 1}`,
     areaServed: asBlank(unit.areaServed),
-    manufacturer: asBlank(match?.raw_brand || 'Tempmaster'),
-    modelNumber: asBlank(match?.raw_model_number || buildSelectionCode(unit)),
-    nominalTons: asBlank(match?.tonnage_value ?? unit.tonnage),
-    unitType: asBlank(match?.family_label || unit.family),
-    unitEer: asBlank(match?.raw_unit_eer),
-    seerIeerr: asBlank(match?.raw_seer_ieer),
-    supplyCfm: asBlank(match?.raw_airflow_cfm),
-    supplyEsp: asBlank(match?.raw_supply_fan_esp_in_wg),
-    supplyQty: asBlank(match?.raw_qty || 1),
-    supplyBhp: '',
-    supplyHp: asBlank(match?.raw_supply_fan_hp),
-    supplyRpm: asBlank(match?.raw_supply_fan_rpm),
-    coolingEat: '',
-    coolingLat: '',
-    coolingSensible: asBlank(match?.raw_cooling_sensible_mbh),
-    coolingTotal: asBlank(match?.raw_cooling_total_mbh),
-    heatingCfm: asBlank(match?.raw_airflow_cfm),
-    heatingEat: '',
-    heatingLat: '',
-    heatingInput: asBlank(match?.raw_heating_input_mbh || unit.heatCapacity),
-    heatingOutput: asBlank(match?.raw_heating_output_mbh),
-    voltPh: asBlank(match?.raw_voltage || unit.voltage),
-    mca: asBlank(match?.raw_mca),
-    mocp: asBlank(match?.raw_mocp),
-    weight: asBlank(match?.raw_weight_lbs),
-    remarks: asBlank(match?.raw_remarks || optionSummary(unit, match)),
+    manufacturer: asBlank(match?.brand || 'HH Trecho'),
+    modelNumber: asBlank(match?.modelnumber || buildSelectionCode(unit)),
+    nominalTons: asBlank(match?.tonnage ?? unit.tonnage),
+    unitType,
+    unitEer: asBlank(match?.uniteer),
+    seerIeerr: asBlank(match?.seerieer),
+    supplyCfm: asBlank(match?.supplyairflowcfm || match?.coolingcfm),
+    supplyEsp: asBlank(match?.supplyfanespinwg),
+    supplyQty: asBlank(match?.supplyfanqty || match?.quantity || 1),
+    supplyBhp: asBlank(match?.supplyfanbhp),
+    supplyHp: asBlank(match?.supplyfanhp),
+    supplyRpm: asBlank(match?.supplyfanrpm),
+    coolingEat: joinSlash(match?.coolingeatdb, match?.coolingeatwb),
+    coolingLat: joinSlash(match?.coolinglatdb, match?.coolinglatwb),
+    coolingSensible: asBlank(match?.coolingsensiblecapacitymbh),
+    coolingTotal: asBlank(match?.coolingtotalcapacitymbh),
+    heatingCfm: asBlank(match?.heatingcfm || match?.supplyairflowcfm || match?.coolingcfm),
+    heatingEat: asBlank(match?.heatingeatf),
+    heatingLat: asBlank(match?.heatinglatf),
+
+    // keep this for gas/electric heat
+    heatingInput: isHeatPump ? '' : asBlank(match?.heatingcapacitymbtu || unit.heatCapacity),
+
+    // new field for heat pumps
+    heatingTotalCapacity: isHeatPump
+      ? asBlank(match?.heatingoutputcapacity || match?.heatingcapacitymbtu)
+      : '',
+
+    heatingOutput: asBlank(match?.heatingoutputcapacity || match?.heatingafue),
+    voltPh: asBlank(match?.voltage || unit.voltage),
+    mca: asBlank(match?.mca),
+    mocp: asBlank(match?.mocp),
+    weight: asBlank(match?.operatingweightlbs),
+    remarks: optionSummary(unit, match),
     selectionCode: buildSelectionCode(unit),
     matchFound: Boolean(match),
-    cutSheetUrl: '',
-    accessoriesUrl: '',
-    wiringUrl: '',
-    iomUrl: '',
+    cutsheetUrl: asBlank(match?.cutsheeturl),
+    accessoriesUrl: asBlank(match?.accessoriesurl),
+    wiringUrl: asBlank(match?.wiringurl),
+    iomUrl: asBlank(match?.iomurl),
   };
 }
 

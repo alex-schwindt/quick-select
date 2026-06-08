@@ -663,7 +663,7 @@ export default function App() {
                       <tr className="schedule-preview-group-row">
                         <th colSpan="4">Identification</th>
                         <th colSpan="3">Selection</th>
-                        <th colSpan="3">Performance</th>
+                        <th colSpan="4">Performance</th>
                         <th colSpan="3">Electrical</th>
                         <th colSpan="1">Remarks</th>
                       </tr>
@@ -677,6 +677,7 @@ export default function App() {
                         <th>Volt/Ph</th>
                         <th>Supply Fan CFM</th>
                         <th>Cooling Total</th>
+                        <th>Heating Total Capacity</th>
                         <th>Heating Input</th>
                         <th>MCA</th>
                         <th>MOCP</th>
@@ -702,6 +703,7 @@ export default function App() {
                             <td>{row.voltPh ? formatVoltageDisplay(row.voltPh) : '—'}</td>
                             <td>{row.supplyCfm || '—'}</td>
                             <td>{row.coolingTotal || '—'}</td>
+                            <td>{row.heatingTotalCapacity || '—'}</td>
                             <td>{row.heatingInput || '—'}</td>
                             <td>{row.mca || '—'}</td>
                             <td>{row.mocp || '—'}</td>
