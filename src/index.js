@@ -244,95 +244,26 @@ function buildColumnMap(worksheet) {
   const rawHeaderMap = buildRawHeaderMap(worksheet, [6, 7]);
 
   const aliases = {
-    descriptor: [
-      'tag',
-      'tag number',
-    ],
-    model_number: [
-      'model number',
-    ],
-    brand: [
-      'brand',
-    ],
-    qty: [
-      'qty',
-      'quantity',
-    ],
-    airflow_cfm: [
-      'supply air blower airflow cfm',
-      'airflow cfm',
-    ],
-    supply_fan_hp: [
-      'supply air blower hp',
-      'hp',
-    ],
-    supply_fan_esp_in_wg: [
-      'supply air blower esp iwg',
-      'esp iwg',
-      'esp in wg',
-    ],
-    supply_fan_rpm: [
-      'supply air blower blwr rpm',
-      'blwr rpm',
-      'blower rpm',
-    ],
-    cooling_total_mbh: [
-      'cooling capacity mbh total',
-      'cooling total',
-      'total capacity mbh',
-    ],
-    cooling_sensible_mbh: [
-      'cooling capacity mbh sens',
-      'cooling sensible',
-      'sensible capacity mbh',
-    ],
-    unit_eer: [
-      'cooling eer',
-      'eer',
-    ],
-    seer_ieer: [
-      'cooling seerieer',
-      'seerieer',
-      'seer ieer',
-    ],
-    refrigerant: [
-      'cooling refrig erant',
-      'refrigerant',
-    ],
-    heating_input_mbh: [
-      'heat pump ratings mbh',
-      'heating capacity mbh total',
-      'heating mbh',
-      'mbh',
-    ],
-    heating_output_mbh: [
-      'heat pump ratings cop',
-      'heating output',
-      'cop',
-    ],
-    voltage: [
-      'electrical voltage',
-      'voltage',
-    ],
-    mca: [
-      'electrical mca',
-      'mca',
-    ],
-    mocp: [
-      'electrical max fuse',
-      'max fuse',
-      'mocp',
-      'min fuse',
-    ],
-    weight_lbs: [
-      'electrical weight2',
-      'weight2',
-      'weight',
-      'operating weight lbs',
-    ],
-    remarks: [
-      'remarks',
-    ],
+    descriptor: ['tag', 'tag number'],
+    model_number: ['model number'],
+    brand: ['brand'],
+    qty: ['qty', 'quantity'],
+    airflow_cfm: ['supply air blower airflow cfm', 'airflow cfm'],
+    supply_fan_hp: ['supply air blower hp', 'hp'],
+    supply_fan_esp_in_wg: ['supply air blower esp iwg', 'esp iwg', 'esp in wg'],
+    supply_fan_rpm: ['supply air blower blwr rpm', 'blwr rpm', 'blower rpm'],
+    cooling_total_mbh: ['cooling capacity mbh total', 'cooling total', 'total capacity mbh'],
+    cooling_sensible_mbh: ['cooling capacity mbh sens', 'cooling sensible', 'sensible capacity mbh'],
+    unit_eer: ['cooling eer', 'eer'],
+    seer_ieer: ['cooling seerieer', 'seerieer', 'seer ieer'],
+    refrigerant: ['cooling refrig erant', 'refrigerant'],
+    heating_input_mbh: ['heat pump ratings mbh', 'heating capacity mbh total', 'heating mbh', 'mbh'],
+    heating_output_mbh: ['heat pump ratings cop', 'heating output', 'cop'],
+    voltage: ['electrical voltage', 'voltage'],
+    mca: ['electrical mca', 'mca'],
+    mocp: ['electrical max fuse', 'max fuse', 'mocp', 'min fuse'],
+    weight_lbs: ['electrical weight2', 'weight2', 'weight', 'operating weight lbs'],
+    remarks: ['remarks'],
   };
 
   const map = {};
@@ -905,52 +836,49 @@ async function findMatchingImportedRow(env, unit) {
 }
 
 function buildResolvedScheduleRow(unit, match, index = 0) {
-  const unitType = asBlank(match?.unittype || unit.family);
+  const unitType = asBlank(match?.family_label || unit.family);
   const isHeatPump = normalizeFamily(unitType) === 'Heat Pump';
 
   return {
     tag: normalizeText(unit.tag) || `RTU-${index + 1}`,
     areaServed: asBlank(unit.areaServed),
-    manufacturer: asBlank(match?.brand || 'HH Trecho'),
-    modelNumber: asBlank(match?.modelnumber || buildSelectionCode(unit)),
-    nominalTons: asBlank(match?.tonnage ?? unit.tonnage),
+    manufacturer: asBlank(match?.raw_brand || 'Tempmaster'),
+    modelNumber: asBlank(match?.raw_model_number || buildSelectionCode(unit)),
+    nominalTons: asBlank(match?.tonnage_value ?? unit.tonnage),
     unitType,
-    unitEer: asBlank(match?.uniteer),
-    seerIeerr: asBlank(match?.seerieer),
-    supplyCfm: asBlank(match?.supplyairflowcfm || match?.coolingcfm),
-    supplyEsp: asBlank(match?.supplyfanespinwg),
-    supplyQty: asBlank(match?.supplyfanqty || match?.quantity || 1),
-    supplyBhp: asBlank(match?.supplyfanbhp),
-    supplyHp: asBlank(match?.supplyfanhp),
-    supplyRpm: asBlank(match?.supplyfanrpm),
-    coolingEat: joinSlash(match?.coolingeatdb, match?.coolingeatwb),
-    coolingLat: joinSlash(match?.coolinglatdb, match?.coolinglatwb),
-    coolingSensible: asBlank(match?.coolingsensiblecapacitymbh),
-    coolingTotal: asBlank(match?.coolingtotalcapacitymbh),
-    heatingCfm: asBlank(match?.heatingcfm || match?.supplyairflowcfm || match?.coolingcfm),
-    heatingEat: asBlank(match?.heatingeatf),
-    heatingLat: asBlank(match?.heatinglatf),
-
-    // keep this for gas/electric heat
-    heatingInput: isHeatPump ? '' : asBlank(match?.heatingcapacitymbtu || unit.heatCapacity),
-
-    // new field for heat pumps
+    unitEer: asBlank(match?.raw_unit_eer),
+    seerIeerr: asBlank(match?.raw_seer_ieer),
+    supplyCfm: asBlank(match?.raw_airflow_cfm),
+    supplyEsp: asBlank(match?.raw_supply_fan_esp_in_wg),
+    supplyQty: asBlank(match?.raw_qty || 1),
+    supplyBhp: '',
+    supplyHp: asBlank(match?.raw_supply_fan_hp),
+    supplyRpm: asBlank(match?.raw_supply_fan_rpm),
+    coolingEat: '',
+    coolingLat: '',
+    coolingSensible: asBlank(match?.raw_cooling_sensible_mbh),
+    coolingTotal: asBlank(match?.raw_cooling_total_mbh),
+    heatingCfm: asBlank(match?.raw_airflow_cfm),
+    heatingEat: '',
+    heatingLat: '',
+    heatingInput: isHeatPump
+      ? ''
+      : asBlank(match?.raw_heating_input_mbh || unit.heatCapacity),
     heatingTotalCapacity: isHeatPump
-      ? asBlank(match?.heatingoutputcapacity || match?.heatingcapacitymbtu)
+      ? asBlank(match?.raw_heating_output_mbh || match?.raw_heating_input_mbh)
       : '',
-
-    heatingOutput: asBlank(match?.heatingoutputcapacity || match?.heatingafue),
-    voltPh: asBlank(match?.voltage || unit.voltage),
-    mca: asBlank(match?.mca),
-    mocp: asBlank(match?.mocp),
-    weight: asBlank(match?.operatingweightlbs),
-    remarks: optionSummary(unit, match),
+    heatingOutput: asBlank(match?.raw_heating_output_mbh),
+    voltPh: asBlank(match?.raw_voltage || unit.voltage),
+    mca: asBlank(match?.raw_mca),
+    mocp: asBlank(match?.raw_mocp),
+    weight: asBlank(match?.raw_weight_lbs),
+    remarks: asBlank(match?.raw_remarks || optionSummary(unit, match)),
     selectionCode: buildSelectionCode(unit),
     matchFound: Boolean(match),
-    cutsheetUrl: asBlank(match?.cutsheeturl),
-    accessoriesUrl: asBlank(match?.accessoriesurl),
-    wiringUrl: asBlank(match?.wiringurl),
-    iomUrl: asBlank(match?.iomurl),
+    cutSheetUrl: '',
+    accessoriesUrl: '',
+    wiringUrl: '',
+    iomUrl: '',
   };
 }
 
@@ -1039,7 +967,7 @@ async function createWorkbook(env, units) {
     row.getCell(COL.heatingCfm).value = scheduleRow.heatingCfm;
     row.getCell(COL.heatingEat).value = scheduleRow.heatingEat;
     row.getCell(COL.heatingLat).value = scheduleRow.heatingLat;
-    row.getCell(COL.heatingInput).value = scheduleRow.heatingInput;
+    row.getCell(COL.heatingInput).value = scheduleRow.heatingTotalCapacity || scheduleRow.heatingInput;
     row.getCell(COL.heatingOutput).value = scheduleRow.heatingOutput;
     row.getCell(COL.voltPh).value = scheduleRow.voltPh;
     row.getCell(COL.mca).value = scheduleRow.mca;
