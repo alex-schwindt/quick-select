@@ -258,11 +258,15 @@ function buildRawHeaderMap(worksheet, headerRows = [3, 4, 5]) {
   return { byKey, byCol, headerRows };
 }
 
-function findColumnByAliases(rawHeaderMap, aliases) {
+function findColumnByAliases(rawHeaderMap, aliases, options = {}) {
+  const { exactOnly = false } = options;
+
   for (const alias of aliases) {
     const key = slugHeader(alias);
     if (rawHeaderMap.byKey[key]) return rawHeaderMap.byKey[key];
   }
+
+  if (exactOnly) return null;
 
   const entries = Object.entries(rawHeaderMap.byKey);
   for (const alias of aliases) {
@@ -277,37 +281,135 @@ function findColumnByAliases(rawHeaderMap, aliases) {
 function buildColumnMap(worksheet) {
   const rawHeaderMap = buildRawHeaderMap(worksheet, [6, 7, 8]);
 
-  const aliases = {
-    descriptor: ['tag', 'tag number'],
-    model_number: ['model number'],
-    brand: ['brand'],
-    qty: ['qty', 'quantity'],
-    airflow_cfm: ['supply air blower airflow cfm', 'airflow cfm'],
-    supply_fan_hp: ['supply air blower hp', 'hp'],
-    supply_fan_esp_in_wg: ['supply air blower esp iwg', 'esp iwg', 'esp in wg'],
-    supply_fan_rpm: ['supply air blower blwr rpm', 'blwr rpm', 'blower rpm'],
+  const fieldConfig = {
+    descriptor: {
+      aliases: ['tag', 'tag number'],
+      exactOnly: false,
+    },
+    model_number: {
+      aliases: ['model number'],
+      exactOnly: false,
+    },
+    brand: {
+      aliases: ['brand'],
+      exactOnly: false,
+    },
+    qty: {
+      aliases: ['qty', 'quantity'],
+      exactOnly: false,
+    },
+    airflow_cfm: {
+      aliases: ['supply air blower airflow cfm', 'airflow cfm'],
+      exactOnly: false,
+    },
+    supply_fan_hp: {
+      aliases: ['supply air blower hp', 'hp'],
+      exactOnly: false,
+    },
+    supply_fan_esp_in_wg: {
+      aliases: ['supply air blower esp iwg', 'esp iwg', 'esp in wg'],
+      exactOnly: false,
+    },
+    supply_fan_rpm: {
+      aliases: ['supply air blower blwr rpm', 'blwr rpm', 'blower rpm'],
+      exactOnly: false,
+    },
 
-    cooling_total_mbh: ['cooling capacity mbh total', 'cooling total', 'total capacity mbh'],
-    cooling_sensible_mbh: ['cooling capacity mbh sens', 'cooling sensible', 'sensible capacity mbh'],
-    unit_eer: ['cooling eer', 'eer'],
-    seer_ieer: ['cooling seer ieer', 'cooling seerieer', 'seerieer', 'seer ieer', 'seer/ieer'],
-    refrigerant: ['cooling refrig erant', 'refrigerant', 'refrig-erant'],
+    cooling_total_mbh: {
+      aliases: [
+        'cooling capacity mbh total',
+        'cooling total'
+      ],
+      exactOnly: true,
+    },
+    cooling_sensible_mbh: {
+      aliases: [
+        'cooling capacity mbh sens',
+        'cooling sensible'
+      ],
+      exactOnly: true,
+    },
+    unit_eer: {
+      aliases: [
+        'cooling eer',
+        'eer'
+      ],
+      exactOnly: true,
+    },
+    seer_ieer: {
+      aliases: [
+        'cooling seer ieer',
+        'cooling seerieer',
+        'seer ieer',
+        'seer/ieer'
+      ],
+      exactOnly: true,
+    },
+    refrigerant: {
+      aliases: [
+        'cooling refrig erant',
+        'refrigerant',
+        'refrig erant'
+      ],
+      exactOnly: true,
+    },
 
-    gas_heat_input_mbh: ['heating gas mbh', 'heating gas'],
-    gas_heat_output_mbh: ['heating gas out', 'heating gas output'],
-    electric_heat_kw: ['electric heater kw', 'electric heater'],
-    heatpump_capacity_mbh: ['heat pump ratings mbh', 'heat pump mbh'],
+    gas_heat_input_mbh: {
+      aliases: [
+        'heating gas mbh',
+        'gas mbh'
+      ],
+      exactOnly: true,
+    },
+    gas_heat_output_mbh: {
+      aliases: [
+        'heating gas out',
+        'gas out'
+      ],
+      exactOnly: true,
+    },
+    electric_heat_kw: {
+      aliases: [
+        'electric heater kw',
+        'electric kw'
+      ],
+      exactOnly: true,
+    },
+    heatpump_capacity_mbh: {
+      aliases: [
+        'heat pump ratings mbh',
+        'heat pump mbh'
+      ],
+      exactOnly: true,
+    },
 
-    voltage: ['electrical voltage', 'voltage'],
-    mca: ['electrical mca', 'mca'],
-    mocp: ['electrical max fuse', 'max fuse', 'mocp'],
-    weight_lbs: ['electrical weight2', 'weight2', 'weight', 'operating weight lbs'],
-    remarks: ['remarks'],
+    voltage: {
+      aliases: ['electrical voltage', 'voltage'],
+      exactOnly: true,
+    },
+    mca: {
+      aliases: ['electrical mca', 'mca'],
+      exactOnly: true,
+    },
+    mocp: {
+      aliases: ['electrical max fuse', 'max fuse', 'mocp'],
+      exactOnly: true,
+    },
+    weight_lbs: {
+      aliases: ['electrical weight2', 'weight2', 'operating weight lbs', 'weight'],
+      exactOnly: true,
+    },
+    remarks: {
+      aliases: ['remarks'],
+      exactOnly: false,
+    },
   };
 
   const map = {};
-  for (const [field, fieldAliases] of Object.entries(aliases)) {
-    map[field] = findColumnByAliases(rawHeaderMap, fieldAliases);
+  for (const [field, config] of Object.entries(fieldConfig)) {
+    map[field] = findColumnByAliases(rawHeaderMap, config.aliases, {
+      exactOnly: config.exactOnly,
+    });
   }
 
   const required = ['descriptor', 'model_number', 'brand', 'qty', 'voltage', 'mca', 'weight_lbs'];
@@ -561,6 +663,22 @@ async function stageDsCommercialWorkbook(env, payload) {
   const batchId = await insertBatch(env, payload);
   const stagedRows = [];
   const columnMap = buildColumnMap(worksheet);
+
+  console.log('columnMap selected columns', {
+  cooling_total_mbh: columnMap.columns.cooling_total_mbh,
+  cooling_sensible_mbh: columnMap.columns.cooling_sensible_mbh,
+  unit_eer: columnMap.columns.unit_eer,
+  seer_ieer: columnMap.columns.seer_ieer,
+  refrigerant: columnMap.columns.refrigerant,
+  gas_heat_input_mbh: columnMap.columns.gas_heat_input_mbh,
+  gas_heat_output_mbh: columnMap.columns.gas_heat_output_mbh,
+  electric_heat_kw: columnMap.columns.electric_heat_kw,
+  heatpump_capacity_mbh: columnMap.columns.heatpump_capacity_mbh,
+  voltage: columnMap.columns.voltage,
+  mca: columnMap.columns.mca,
+  mocp: columnMap.columns.mocp,
+  weight_lbs: columnMap.columns.weight_lbs,
+});
 
   if (columnMap.missing.length) {
     throw new Error(`Could not identify required columns from workbook headers: ${columnMap.missing.join(', ')}`);
