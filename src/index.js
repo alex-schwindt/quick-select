@@ -293,30 +293,58 @@ function findColumnByAliases(rawHeaderMap, aliases, options = {}) {
 // FIX: detect which header rows are actually populated instead of hardcoding [6,7,8].
 // Scans rows 1-12 and picks the first band of up to 3 non-empty rows that contain
 // typical header text (no tonnage descriptor pattern).
-function detectHeaderRows(worksheet) {
-  const candidates = [];
-  for (let rowNumber = 1; rowNumber <= 12; rowNumber += 1) {
-    const row = worksheet.getRow(rowNumber);
-    let nonEmpty = 0;
-    for (let col = 1; col <= Math.min(worksheet.columnCount || 30, 30); col += 1) {
-      const val = getCellValue(row, col);
-      if (val) nonEmpty += 1;
-    }
-    // Skip rows that look like data rows (contain tonnage descriptor)
-    const firstCell = getCellValue(row, 1);
-    const looksLikeData = /^\d+(?:\.\d+)?\s*-?\s*ton/i.test(firstCell);
-    if (nonEmpty >= 3 && !looksLikeData) {
-      candidates.push(rowNumber);
-    }
-    if (candidates.length === 3) break;
+function scoreHeaderRows(worksheet, headerRows) {
+  const rawHeaderMap = buildRawHeaderMap(worksheet, headerRows);
+
+  const probes = {
+    descriptor: ['tag', 'tag number'],
+    model_number: ['model number'],
+    brand: ['brand'],
+    qty: ['qty', 'quantity'],
+    voltage: ['electrical voltage', 'voltage', 'volt ph', 'volt'],
+    mca: ['electrical mca', 'elec mca', 'mca'],
+    weight_lbs: ['operating weight lbs', 'weight lbs', 'weight'],
+  };
+
+  let score = 0;
+
+  for (const [, aliases] of Object.entries(probes)) {
+    const col = findColumnByAliases(rawHeaderMap, aliases, { exactOnly: false });
+    if (col) score += 1;
   }
-  return candidates.length >= 2 ? candidates : [6, 7, 8];
+
+  return { headerRows, rawHeaderMap, score };
+}
+
+function detectBestHeaderRows(worksheet) {
+  const candidates = [
+    [3, 4, 5],
+    [4, 5, 6],
+    [5, 6, 7],
+    [6, 7, 8],
+    [7, 8, 9],
+    [8, 9, 10],
+    [9, 10, 11],
+    [10, 11, 12],
+  ];
+
+  let best = null;
+
+  for (const headerRows of candidates) {
+    const attempt = scoreHeaderRows(worksheet, headerRows);
+    console.log(`Header rows ${headerRows.join(',')}: score=${attempt.score}`);
+    if (!best || attempt.score > best.score) best = attempt;
+    // Perfect score — stop early
+    if (best.score === 7) break;
+  }
+
+  console.log('Best header rows:', best?.headerRows, 'score:', best?.score);
+  return best?.headerRows || [6, 7, 8];
 }
 
 function buildColumnMap(worksheet) {
-  // FIX: detect header rows dynamically instead of hardcoding [6, 7, 8]
-  const headerRows = detectHeaderRows(worksheet);
-  console.log('Detected header rows:', headerRows);
+  // Use scoring-based detection to find the best header band across workbook layouts
+  const headerRows = detectBestHeaderRows(worksheet);
 
   const rawHeaderMap = buildRawHeaderMap(worksheet, headerRows);
 
