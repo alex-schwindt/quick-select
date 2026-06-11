@@ -657,8 +657,10 @@ async function upsertUnitModelV2(env, batchId, stagedRow) {
 
 async function stageDsCommercialWorkbook(env, payload) {
   const workbook = await loadWorkbookFromSource(env, payload.source_filename);
-  const worksheet = workbook.getWorksheet(payload.source_sheet || 'Schedule');
-  if (!worksheet) throw new Error(`Worksheet not found: ${payload.source_sheet || 'Schedule'}`);
+  const worksheet = workbook.getWorksheet(payload.source_sheet || 'Schedule') || workbook.worksheets?.[0];
+  if (!worksheet) {
+  throw new Error(`Worksheet not found. Available sheets: ${workbook.worksheets.map(ws => ws.name).join(', ')}`);
+}
 
   const batchId = await insertBatch(env, payload);
   const stagedRows = [];
