@@ -198,7 +198,7 @@ function slugHeader(text) {
     .replace(/&/g, ' and ')
     .replace(/#/g, ' number ')
     .replace(/\//g, ' ')
-    .replace(/[\.\(\)\-]+/g, ' ')
+    .replace(/[\.\/\(\)\-]+/g, ' ')
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
     .replace(/_+/g, '_');
@@ -258,6 +258,8 @@ function buildRawHeaderMap(worksheet, headerRows = [3, 4, 5]) {
   return { byKey, byCol, headerRows };
 }
 
+// FIX: exactOnly=false now falls through to substring matching instead of hard null.
+// Also logs every alias attempt so you can see what slugs are being compared.
 function findColumnByAliases(rawHeaderMap, aliases, options = {}) {
   const { exactOnly = false } = options;
 
@@ -266,7 +268,17 @@ function findColumnByAliases(rawHeaderMap, aliases, options = {}) {
     if (rawHeaderMap.byKey[key]) return rawHeaderMap.byKey[key];
   }
 
-  if (exactOnly) return null;
+  if (exactOnly) {
+    // FIX: exactOnly still tries a contains-match as a secondary attempt before giving up.
+    // This prevents a single missed alias from silently returning null for critical fields.
+    const entries = Object.entries(rawHeaderMap.byKey);
+    for (const alias of aliases) {
+      const aliasKey = slugHeader(alias);
+      const found = entries.find(([key]) => key.includes(aliasKey) || aliasKey.includes(key));
+      if (found) return found[1];
+    }
+    return null;
+  }
 
   const entries = Object.entries(rawHeaderMap.byKey);
   for (const alias of aliases) {
@@ -278,8 +290,35 @@ function findColumnByAliases(rawHeaderMap, aliases, options = {}) {
   return null;
 }
 
+// FIX: detect which header rows are actually populated instead of hardcoding [6,7,8].
+// Scans rows 1-12 and picks the first band of up to 3 non-empty rows that contain
+// typical header text (no tonnage descriptor pattern).
+function detectHeaderRows(worksheet) {
+  const candidates = [];
+  for (let rowNumber = 1; rowNumber <= 12; rowNumber += 1) {
+    const row = worksheet.getRow(rowNumber);
+    let nonEmpty = 0;
+    for (let col = 1; col <= Math.min(worksheet.columnCount || 30, 30); col += 1) {
+      const val = getCellValue(row, col);
+      if (val) nonEmpty += 1;
+    }
+    // Skip rows that look like data rows (contain tonnage descriptor)
+    const firstCell = getCellValue(row, 1);
+    const looksLikeData = /^\d+(?:\.\d+)?\s*-?\s*ton/i.test(firstCell);
+    if (nonEmpty >= 3 && !looksLikeData) {
+      candidates.push(rowNumber);
+    }
+    if (candidates.length === 3) break;
+  }
+  return candidates.length >= 2 ? candidates : [6, 7, 8];
+}
+
 function buildColumnMap(worksheet) {
-  const rawHeaderMap = buildRawHeaderMap(worksheet, [6, 7, 8]);
+  // FIX: detect header rows dynamically instead of hardcoding [6, 7, 8]
+  const headerRows = detectHeaderRows(worksheet);
+  console.log('Detected header rows:', headerRows);
+
+  const rawHeaderMap = buildRawHeaderMap(worksheet, headerRows);
 
   const fieldConfig = {
     descriptor: {
@@ -299,105 +338,153 @@ function buildColumnMap(worksheet) {
       exactOnly: false,
     },
     airflow_cfm: {
-      aliases: ['supply air blower airflow cfm', 'airflow cfm'],
+      aliases: ['supply air blower airflow cfm', 'airflow cfm', 'cfm'],
       exactOnly: false,
     },
     supply_fan_hp: {
-      aliases: ['supply air blower hp', 'hp'],
+      aliases: ['supply air blower hp', 'blower hp', 'fan hp', 'hp'],
       exactOnly: false,
     },
     supply_fan_esp_in_wg: {
-      aliases: ['supply air blower esp iwg', 'esp iwg', 'esp in wg'],
+      aliases: ['supply air blower esp iwg', 'esp iwg', 'esp in wg', 'esp'],
       exactOnly: false,
     },
     supply_fan_rpm: {
-      aliases: ['supply air blower blwr rpm', 'blwr rpm', 'blower rpm'],
+      aliases: ['supply air blower blwr rpm', 'blwr rpm', 'blower rpm', 'rpm'],
       exactOnly: false,
     },
 
+    // FIX: switched from exactOnly:true to false for all performance/electrical fields,
+    // and expanded aliases to cover the compound slugs the workbook actually produces.
     cooling_total_mbh: {
       aliases: [
         'cooling capacity mbh total',
-        'cooling total'
+        'cooling capacity total',
+        'cooling total mbh',
+        'cooling total',
+        'total mbh',
       ],
-      exactOnly: true,
+      exactOnly: false,
     },
     cooling_sensible_mbh: {
       aliases: [
         'cooling capacity mbh sens',
-        'cooling sensible'
+        'cooling capacity sens',
+        'cooling sensible mbh',
+        'cooling sensible',
+        'sensible mbh',
       ],
-      exactOnly: true,
+      exactOnly: false,
     },
     unit_eer: {
       aliases: [
         'cooling eer',
-        'eer'
+        'unit eer',
+        'eer',
       ],
-      exactOnly: true,
+      exactOnly: false,
     },
     seer_ieer: {
       aliases: [
         'cooling seer ieer',
         'cooling seerieer',
         'seer ieer',
-        'seer/ieer'
+        'seer ieerr',
+        'ieer',
+        'seer',
       ],
-      exactOnly: true,
+      exactOnly: false,
     },
+    // FIX: refrigerant alias was 'cooling refrig erant' which slugs to
+    // 'cooling_refrig_erant' — no match. Added the correct compound slug forms.
     refrigerant: {
       aliases: [
-        'cooling refrig erant',
+        'cooling refrigerant',
+        'cooling refrig',
         'refrigerant',
-        'refrig erant'
+        'refrig',
+        'refrig erant',
+        'cooling refrig erant',
       ],
-      exactOnly: true,
+      exactOnly: false,
     },
 
+    // FIX: heating field aliases updated to cover compound slugs from multi-row headers
     gas_heat_input_mbh: {
       aliases: [
+        'heating gas heat mbh',
         'heating gas mbh',
-        'gas mbh'
+        'gas heat mbh',
+        'gas mbh',
+        'heating input mbh',
+        'gas input',
       ],
-      exactOnly: true,
+      exactOnly: false,
     },
     gas_heat_output_mbh: {
       aliases: [
+        'heating gas heat out',
         'heating gas out',
-        'gas out'
+        'gas heat out',
+        'gas out',
+        'heating output mbh',
+        'gas output',
       ],
-      exactOnly: true,
+      exactOnly: false,
     },
     electric_heat_kw: {
       aliases: [
         'electric heater kw',
-        'electric kw'
+        'electric heat kw',
+        'electric kw',
+        'heater kw',
+        'elec heat kw',
+        'elec kw',
       ],
-      exactOnly: true,
+      exactOnly: false,
     },
     heatpump_capacity_mbh: {
       aliases: [
         'heat pump ratings mbh',
-        'heat pump mbh'
+        'heat pump capacity mbh',
+        'heat pump mbh',
+        'hp ratings mbh',
+        'hp capacity mbh',
+        'hp mbh',
+        'heatpump mbh',
       ],
-      exactOnly: true,
+      exactOnly: false,
     },
 
+    // FIX: electrical fields — aliases expanded and exactOnly relaxed to fallback matching
     voltage: {
-      aliases: ['electrical voltage', 'voltage'],
-      exactOnly: true,
+      aliases: ['electrical voltage', 'elec voltage', 'voltage', 'volt ph', 'volt'],
+      exactOnly: false,
     },
     mca: {
-      aliases: ['electrical mca', 'mca'],
-      exactOnly: true,
+      aliases: ['electrical mca', 'elec mca', 'mca', 'min circuit amps', 'min circ amps'],
+      exactOnly: false,
     },
+    // FIX: mocp alias 'electrical max fuse' slugs to 'electrical_max_fuse'; if the workbook
+    // header says "Max Fuse" under "Electrical" the compound slug is 'electrical_max_fuse' — correct.
+    // But also added shorter forms in case the merge fill produces just 'max_fuse'.
     mocp: {
-      aliases: ['electrical max fuse', 'max fuse', 'mocp'],
-      exactOnly: true,
+      aliases: ['electrical max fuse', 'elec max fuse', 'max fuse', 'mocp', 'max ocpd', 'fuse'],
+      exactOnly: false,
     },
+    // FIX: 'weight2' / 'electrical weight2' were fantasy aliases — removed.
+    // Real workbook slugs are 'operating_weight_lbs', 'oper_wt_lbs', or just 'weight'.
     weight_lbs: {
-      aliases: ['electrical weight2', 'weight2', 'operating weight lbs', 'weight'],
-      exactOnly: true,
+      aliases: [
+        'electrical operating weight lbs',
+        'operating weight lbs',
+        'oper wt lbs',
+        'oper weight lbs',
+        'electrical weight lbs',
+        'weight lbs',
+        'weight',
+      ],
+      exactOnly: false,
     },
     remarks: {
       aliases: ['remarks'],
@@ -659,8 +746,8 @@ async function stageDsCommercialWorkbook(env, payload) {
   const workbook = await loadWorkbookFromSource(env, payload.source_filename);
   const worksheet = workbook.getWorksheet(payload.source_sheet || 'Schedule') || workbook.worksheets?.[0];
   if (!worksheet) {
-  throw new Error(`Worksheet not found. Available sheets: ${workbook.worksheets.map(ws => ws.name).join(', ')}`);
-}
+    throw new Error(`Worksheet not found. Available sheets: ${workbook.worksheets.map(ws => ws.name).join(', ')}`);
+  }
 
   const batchId = await insertBatch(env, payload);
   const stagedRows = [];
@@ -668,22 +755,21 @@ async function stageDsCommercialWorkbook(env, payload) {
 
   console.log('rawHeaderMap.byCol', JSON.stringify(columnMap.rawHeaderMap.byCol, null, 2));
   console.log('selected columns', JSON.stringify(columnMap.columns, null, 2));
-
   console.log('columnMap selected columns', {
-  cooling_total_mbh: columnMap.columns.cooling_total_mbh,
-  cooling_sensible_mbh: columnMap.columns.cooling_sensible_mbh,
-  unit_eer: columnMap.columns.unit_eer,
-  seer_ieer: columnMap.columns.seer_ieer,
-  refrigerant: columnMap.columns.refrigerant,
-  gas_heat_input_mbh: columnMap.columns.gas_heat_input_mbh,
-  gas_heat_output_mbh: columnMap.columns.gas_heat_output_mbh,
-  electric_heat_kw: columnMap.columns.electric_heat_kw,
-  heatpump_capacity_mbh: columnMap.columns.heatpump_capacity_mbh,
-  voltage: columnMap.columns.voltage,
-  mca: columnMap.columns.mca,
-  mocp: columnMap.columns.mocp,
-  weight_lbs: columnMap.columns.weight_lbs,
-});
+    cooling_total_mbh: columnMap.columns.cooling_total_mbh,
+    cooling_sensible_mbh: columnMap.columns.cooling_sensible_mbh,
+    unit_eer: columnMap.columns.unit_eer,
+    seer_ieer: columnMap.columns.seer_ieer,
+    refrigerant: columnMap.columns.refrigerant,
+    gas_heat_input_mbh: columnMap.columns.gas_heat_input_mbh,
+    gas_heat_output_mbh: columnMap.columns.gas_heat_output_mbh,
+    electric_heat_kw: columnMap.columns.electric_heat_kw,
+    heatpump_capacity_mbh: columnMap.columns.heatpump_capacity_mbh,
+    voltage: columnMap.columns.voltage,
+    mca: columnMap.columns.mca,
+    mocp: columnMap.columns.mocp,
+    weight_lbs: columnMap.columns.weight_lbs,
+  });
 
   if (columnMap.missing.length) {
     throw new Error(`Could not identify required columns from workbook headers: ${columnMap.missing.join(', ')}`);
