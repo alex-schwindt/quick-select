@@ -567,7 +567,9 @@ async function handleUploadTemplate(request, env) {
 
   const key = normalizeText(file.name) || `upload-${Date.now()}.xlsx`;
 
-  await env.TEMPLATES.put(key, file.stream(), {
+
+  const buffer = await file.arrayBuffer();
+  await env.TEMPLATES.put(key, buffer, {
     httpMetadata: {
       contentType: file.type || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     },
