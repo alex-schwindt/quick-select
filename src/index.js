@@ -664,6 +664,9 @@ async function stageDsCommercialWorkbook(env, payload) {
   const stagedRows = [];
   const columnMap = buildColumnMap(worksheet);
 
+  console.log('rawHeaderMap.byCol', JSON.stringify(columnMap.rawHeaderMap.byCol, null, 2));
+  console.log('selected columns', JSON.stringify(columnMap.columns, null, 2));
+
   console.log('columnMap selected columns', {
   cooling_total_mbh: columnMap.columns.cooling_total_mbh,
   cooling_sensible_mbh: columnMap.columns.cooling_sensible_mbh,
@@ -977,6 +980,21 @@ async function listCatalog(env, filters = {}) {
 }
 
 async function findMatchingImportedRow(env, unit) {
+  const requestedModelNumber = normalizeText(unit.modelNumber || unit.selectedModelNumber);
+
+  if (requestedModelNumber) {
+    const byModel = await env.DB.prepare(`
+      SELECT *
+      FROM staging_schedule_rows
+      WHERE raw_model_number = ?
+        AND parse_status = 'parsed'
+      ORDER BY id DESC
+      LIMIT 1
+    `).bind(requestedModelNumber).first();
+
+    if (byModel) return byModel;
+  }
+
   const family = normalizeFamily(unit.family);
   const tonnage = String(unit.tonnage);
   const voltage = normalizeVoltage(unit.voltage);
