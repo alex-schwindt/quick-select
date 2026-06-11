@@ -68,6 +68,21 @@ function normalizeTonnage(value) {
   return String(value ?? '').trim().replace('.0', '');
 }
 
+function normalizeNumericText(value) {
+  const text = normalizeText(value).replace(/,/g, '');
+  if (!text) return '';
+  const n = Number(text);
+  return Number.isFinite(n) ? String(n) : text;
+}
+
+function hasMeaningfulValue(value) {
+  const text = normalizeNumericText(value);
+  if (!text) return false;
+  const n = Number(text);
+  if (Number.isFinite(n)) return n !== 0;
+  return true;
+}
+
 function buildSelectionCode(unit) {
   const familyCode = normalizeFamily(unit.family) === 'Heat Pump' ? 'HP' : 'AC';
   const efficiencyCode = normalizeEfficiency(unit.efficiency) === 'High' ? 'HI' : 'STD';
@@ -106,26 +121,17 @@ function joinSlash(a, b) {
   return parts.length ? parts.join('/') : '';
 }
 
-function parseDescriptor(descriptor) {
+function parseDescriptorBasics(descriptor) {
   const text = normalizeText(descriptor);
   const tonnageMatch = text.match(/^(\d+(?:\.\d+)?)\s*-?\s*Ton/i);
-  const heatMatch = text.match(/(\d+(?:\.\d+)?)\s*MBH\s*(Gas|Electric)/i);
-  const voltageMatch = text.match(/,\s*(2083|208-3|208\/3|4603|460-3|460\/3)/i);
+  const voltageMatch = text.match(/\b(2083|208-3|208\/3|208-3-60|4603|460-3|460\/3|460-3-60)\b/i);
 
   const tonnage = tonnageMatch ? normalizeTonnage(tonnageMatch[1]) : '';
   const voltage = normalizeVoltage(voltageMatch ? voltageMatch[1] : '');
-  const familyLabel = /\bHP\b/i.test(text) ? 'Heat Pump' : 'AC';
+  const familyLabel = /\bHP\b|\bHeat Pump\b/i.test(text) ? 'Heat Pump' : 'AC';
   const familyKey = familyLabel === 'Heat Pump' ? 'hp' : 'ac';
   const efficiencyLabel = 'Standard';
   const efficiencyKey = normalizeEfficiency(efficiencyLabel);
-
-  let heatType = 'None';
-  let heatCapacity = '';
-
-  if (heatMatch) {
-    heatType = normalizeHeatType(heatMatch[2]);
-    heatCapacity = normalizeHeatCapacity(heatMatch[1]);
-  }
 
   return {
     family_key: familyKey,
@@ -136,10 +142,38 @@ function parseDescriptor(descriptor) {
     tonnage_value: tonnage ? Number(tonnage) : 0,
     voltage_key: voltage || '',
     voltage_label: voltage || '',
-    aux_heat_type_key: heatType || 'None',
-    aux_heat_type_label: heatType || 'None',
-    aux_heat_capacity_key: heatCapacity || '',
-    aux_heat_capacity_label: heatCapacity ? `${heatCapacity} MBH` : '',
+  };
+}
+
+function deriveHeatFieldsFromRow(rowData) {
+  const gasInputMbh = normalizeNumericText(rowData.raw_gas_heat_input_mbh);
+  const gasOutputMbh = normalizeNumericText(rowData.raw_gas_heat_output_mbh);
+  const electricKw = normalizeNumericText(rowData.raw_electric_heat_kw);
+
+  if (hasMeaningfulValue(gasInputMbh) || hasMeaningfulValue(gasOutputMbh)) {
+    const gasCapacity = gasInputMbh || gasOutputMbh;
+    return {
+      aux_heat_type_key: 'gas',
+      aux_heat_type_label: 'Aluminum Gas Heat',
+      aux_heat_capacity_key: gasCapacity,
+      aux_heat_capacity_label: gasCapacity,
+    };
+  }
+
+  if (hasMeaningfulValue(electricKw)) {
+    return {
+      aux_heat_type_key: 'electric',
+      aux_heat_type_label: 'Electric Heat',
+      aux_heat_capacity_key: electricKw,
+      aux_heat_capacity_label: electricKw,
+    };
+  }
+
+  return {
+    aux_heat_type_key: 'none',
+    aux_heat_type_label: 'None',
+    aux_heat_capacity_key: '',
+    aux_heat_capacity_label: '',
   };
 }
 
@@ -241,7 +275,7 @@ function findColumnByAliases(rawHeaderMap, aliases) {
 }
 
 function buildColumnMap(worksheet) {
-  const rawHeaderMap = buildRawHeaderMap(worksheet, [6, 7]);
+  const rawHeaderMap = buildRawHeaderMap(worksheet, [6, 7, 8]);
 
   const aliases = {
     descriptor: ['tag', 'tag number'],
@@ -252,16 +286,21 @@ function buildColumnMap(worksheet) {
     supply_fan_hp: ['supply air blower hp', 'hp'],
     supply_fan_esp_in_wg: ['supply air blower esp iwg', 'esp iwg', 'esp in wg'],
     supply_fan_rpm: ['supply air blower blwr rpm', 'blwr rpm', 'blower rpm'],
+
     cooling_total_mbh: ['cooling capacity mbh total', 'cooling total', 'total capacity mbh'],
     cooling_sensible_mbh: ['cooling capacity mbh sens', 'cooling sensible', 'sensible capacity mbh'],
     unit_eer: ['cooling eer', 'eer'],
-    seer_ieer: ['cooling seerieer', 'seerieer', 'seer ieer'],
-    refrigerant: ['cooling refrig erant', 'refrigerant'],
-    heating_input_mbh: ['heating capacity mbh total', 'heating mbh', 'mbh'],
-    heating_output_mbh: ['heat pump ratings mbh', 'heating output', 'heating total capacity'],
+    seer_ieer: ['cooling seer ieer', 'cooling seerieer', 'seerieer', 'seer ieer', 'seer/ieer'],
+    refrigerant: ['cooling refrig erant', 'refrigerant', 'refrig-erant'],
+
+    gas_heat_input_mbh: ['heating gas mbh', 'heating gas'],
+    gas_heat_output_mbh: ['heating gas out', 'heating gas output'],
+    electric_heat_kw: ['electric heater kw', 'electric heater'],
+    heatpump_capacity_mbh: ['heat pump ratings mbh', 'heat pump mbh'],
+
     voltage: ['electrical voltage', 'voltage'],
     mca: ['electrical mca', 'mca'],
-    mocp: ['electrical max fuse', 'max fuse', 'mocp', 'min fuse'],
+    mocp: ['electrical max fuse', 'max fuse', 'mocp'],
     weight_lbs: ['electrical weight2', 'weight2', 'weight', 'operating weight lbs'],
     remarks: ['remarks'],
   };
@@ -535,10 +574,22 @@ async function stageDsCommercialWorkbook(env, payload) {
 
     if (!descriptor || /^tag\b/i.test(descriptor)) return;
     if (/^model number$/i.test(modelNumber)) return;
-    if (!/^\d+(?:\.\d+)?-?ton/i.test(descriptor.replace(/\s+/g, ''))) return;
+    if (!/^\d+(?:\.\d+)?\s*-?\s*ton/i.test(descriptor)) return;
     if (!modelNumber) return;
 
-    stagedRows.push({
+    const rawGasHeatInputMbh = getMappedCellValue(row, columnMap, 'gas_heat_input_mbh');
+    const rawGasHeatOutputMbh = getMappedCellValue(row, columnMap, 'gas_heat_output_mbh');
+    const rawElectricHeatKw = getMappedCellValue(row, columnMap, 'electric_heat_kw');
+    const rawHeatPumpCapacityMbh = getMappedCellValue(row, columnMap, 'heatpump_capacity_mbh');
+
+    const descriptorFields = parseDescriptorBasics(descriptor);
+    const derivedHeatFields = deriveHeatFieldsFromRow({
+      raw_gas_heat_input_mbh: rawGasHeatInputMbh,
+      raw_gas_heat_output_mbh: rawGasHeatOutputMbh,
+      raw_electric_heat_kw: rawElectricHeatKw,
+    });
+
+    const rowData = {
       source_row_number: rowNumber,
       source_descriptor: descriptor,
       raw_model_number: modelNumber,
@@ -553,17 +604,31 @@ async function stageDsCommercialWorkbook(env, payload) {
       raw_unit_eer: getMappedCellValue(row, columnMap, 'unit_eer'),
       raw_seer_ieer: getMappedCellValue(row, columnMap, 'seer_ieer'),
       raw_refrigerant: getMappedCellValue(row, columnMap, 'refrigerant'),
-      raw_heating_input_mbh: getMappedCellValue(row, columnMap, 'heating_input_mbh'),
-      raw_heating_output_mbh: getMappedCellValue(row, columnMap, 'heating_output_mbh'),
+      raw_heating_input_mbh: rawGasHeatInputMbh || rawElectricHeatKw,
+      raw_heating_output_mbh: rawHeatPumpCapacityMbh || rawGasHeatOutputMbh,
       raw_voltage: getMappedCellValue(row, columnMap, 'voltage'),
       raw_mca: getMappedCellValue(row, columnMap, 'mca'),
       raw_mocp: getMappedCellValue(row, columnMap, 'mocp'),
       raw_weight_lbs: getMappedCellValue(row, columnMap, 'weight_lbs'),
       raw_remarks: getMappedCellValue(row, columnMap, 'remarks'),
-      ...parseDescriptor(descriptor),
+      ...descriptorFields,
+      ...derivedHeatFields,
       parse_status: 'parsed',
       parse_notes: null,
-    });
+    };
+
+    if (hasMeaningfulValue(rawHeatPumpCapacityMbh)) {
+      rowData.family_key = 'hp';
+      rowData.family_label = 'Heat Pump';
+      if (!hasMeaningfulValue(rawGasHeatInputMbh) && !hasMeaningfulValue(rawGasHeatOutputMbh) && !hasMeaningfulValue(rawElectricHeatKw)) {
+        rowData.aux_heat_type_key = 'none';
+        rowData.aux_heat_type_label = 'None';
+        rowData.aux_heat_capacity_key = '';
+        rowData.aux_heat_capacity_label = '';
+      }
+    }
+
+    stagedRows.push(rowData);
   });
 
   const duplicateCounts = new Map();
