@@ -1,4 +1,4 @@
-import ExcelJS from 'exceljs';
+import * as XLSX from 'xlsx';
 
 // ─────────────────────────────────────────────
 // Utility helpers
@@ -128,35 +128,65 @@ function optionSummary(unit, match) {
   ].filter(Boolean).join(', ');
 }
 
-function joinSlash(a, b) {
-  const parts = [asBlank(a), asBlank(b)].filter((v) => v !== '');
-  return parts.length ? parts.join('/') : '';
-}
-
 // ─────────────────────────────────────────────
-// Workbook cell reading
+// SheetJS workbook helpers
 // ─────────────────────────────────────────────
 
-function getCellValue(row, index) {
-  const cell = row.getCell(index);
-  const value = cell?.value;
+/**
+ * Load a workbook from R2 using SheetJS.
+ * SheetJS works natively in Cloudflare Workers — no Node.js dependencies.
+ */
+async function loadWorkbookFromR2(env, sourceFilename) {
+  const r2Object = await env.TEMPLATES.get(sourceFilename);
+  if (!r2Object) throw new Error(`Workbook not found in R2: "${sourceFilename}"`);
 
-  if (value && typeof value === 'object') {
-    if ('text' in value) return normalizeText(value.text);
-    if ('result' in value) return normalizeText(value.result);
-    if ('richText' in value && Array.isArray(value.richText)) {
-      return normalizeText(value.richText.map((part) => part.text || '').join(''));
-    }
+  const arrayBuffer = await r2Object.arrayBuffer();
+  if (!arrayBuffer || arrayBuffer.byteLength < 512) {
+    throw new Error(`R2 object "${sourceFilename}" is empty or corrupt (${arrayBuffer?.byteLength ?? 0} bytes).`);
   }
 
-  return normalizeText(value);
+  return XLSX.read(arrayBuffer, { type: 'array', cellText: true, cellDates: false, raw: false });
+}
+
+/**
+ * Get a worksheet by name, falling back to the first sheet.
+ * Returns { worksheet, name } where worksheet is a SheetJS sheet object.
+ */
+function getWorksheet(workbook, sheetName) {
+  const name = workbook.SheetNames.includes(sheetName)
+    ? sheetName
+    : workbook.SheetNames[0];
+
+  if (!name) {
+    throw new Error('Workbook contains no sheets.');
+  }
+
+  return { worksheet: workbook.Sheets[name], name };
+}
+
+/**
+ * Convert a SheetJS sheet to a 2D array of trimmed strings.
+ * Row index is 0-based. Column index is 0-based.
+ * Empty cells become ''.
+ */
+function sheetToRows(worksheet) {
+  return XLSX.utils.sheet_to_json(worksheet, {
+    header: 1,
+    defval: '',
+    raw: false,
+    blankrows: true,
+  }).map((row) => row.map((cell) => normalizeText(cell)));
+}
+
+/**
+ * Read a single cell from the rows array by 0-based row/col.
+ */
+function getCell(rows, rowIndex, colIndex) {
+  return normalizeText(rows[rowIndex]?.[colIndex] ?? '');
 }
 
 // ─────────────────────────────────────────────
-// Header detection — two-phase approach:
-//   Phase 1: scan every row for a "Tag / Model Number" anchor.
-//   Phase 2: build the full column map from that anchor row band.
-// This replaces the scoring/fuzzy approach with a deterministic anchor search.
+// Header detection (same deterministic anchor approach, adapted for SheetJS rows)
 // ─────────────────────────────────────────────
 
 function slugHeader(text) {
@@ -165,17 +195,17 @@ function slugHeader(text) {
     .replace(/&/g, ' and ')
     .replace(/#/g, ' number ')
     .replace(/\//g, ' ')
-    .replace(/[\.\/\(\)\-]+/g, ' ')
+    .replace(/[.\/\(\)\-]+/g, ' ')
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
     .replace(/_+/g, '_');
 }
 
-function fillMergedHeaderRow(values) {
+function fillMergedHeaderRow(cells) {
   const filled = [];
   let current = '';
-  for (const value of values) {
-    const text = normalizeText(value);
+  for (const cell of cells) {
+    const text = normalizeText(cell);
     if (text) current = text;
     filled.push(current);
   }
@@ -197,89 +227,60 @@ function uniqueStrings(values) {
 }
 
 /**
- * Scan rows 1–20 to find an anchor row whose cells contain "Tag" (or "Tag Number")
- * AND "Model Number". This is the bottom row of the header band. The band is then
- * composed of up to 3 rows ending at that anchor row.
- *
- * Returns the anchor row number, or null if not found.
+ * Scan the first 20 rows to find the anchor row containing both "Tag" and "Model Number".
+ * Returns 0-based row index, or null if not found.
  */
-function findAnchorRow(worksheet) {
-  const maxRow = Math.min(worksheet.rowCount || 20, 20);
-
-  for (let r = 1; r <= maxRow; r += 1) {
-    const row = worksheet.getRow(r);
-    const maxCol = worksheet.columnCount || 0;
+function findAnchorRowIndex(rows) {
+  const maxRow = Math.min(rows.length, 20);
+  for (let r = 0; r < maxRow; r += 1) {
+    const row = rows[r];
     let hasTag = false;
     let hasModelNumber = false;
-
-    for (let col = 1; col <= maxCol; col += 1) {
-      const raw = getCellValue(row, col).toLowerCase().trim();
-      if (raw === 'tag' || raw === 'tag number' || raw === 'tag #') hasTag = true;
-      if (raw === 'model number' || raw === 'model no' || raw === 'model #') hasModelNumber = true;
+    for (const cell of row) {
+      const v = normalizeText(cell).toLowerCase();
+      if (v === 'tag' || v === 'tag number' || v === 'tag #') hasTag = true;
+      if (v === 'model number' || v === 'model no' || v === 'model #') hasModelNumber = true;
     }
-
-    if (hasTag && hasModelNumber) {
-      return r;
-    }
+    if (hasTag && hasModelNumber) return r;
   }
-
   return null;
 }
 
-/**
- * Build a column lookup map from a band of header rows.
- * Returns { byKey: { slug -> colIndex }, byCol: { colIndex -> { key, parts } } }
- */
-function buildRawHeaderMap(worksheet, headerRows) {
-  const maxCol = worksheet.columnCount || 0;
-  const layers = headerRows.map((rowNumber) => {
-    const row = worksheet.getRow(rowNumber);
-    const raw = [];
-    for (let col = 1; col <= maxCol; col += 1) {
-      raw.push(getCellValue(row, col));
-    }
-    return fillMergedHeaderRow(raw);
-  });
+function buildRawHeaderMap(rows, headerRowIndices) {
+  const maxCol = Math.max(...headerRowIndices.map((r) => rows[r]?.length ?? 0));
+  const layers = headerRowIndices.map((r) => fillMergedHeaderRow(rows[r] ?? []));
 
   const byKey = {};
   const byCol = {};
 
-  for (let col = 1; col <= maxCol; col += 1) {
-    const parts = uniqueStrings(layers.map((layer) => layer[col - 1]));
+  for (let col = 0; col < maxCol; col += 1) {
+    const parts = uniqueStrings(layers.map((layer) => layer[col] ?? ''));
     const key = slugHeader(parts.join(' '));
     if (!key) continue;
     byCol[col] = { key, parts };
     if (!(key in byKey)) byKey[key] = col;
   }
 
-  return { byKey, byCol, headerRows };
+  return { byKey, byCol };
 }
 
-/**
- * Find a column by trying a prioritized list of slug aliases.
- * Priority order:
- *   1. Exact slug match
- *   2. Alias slug is contained within a header slug (alias is more specific)
- *   3. Header slug is contained within an alias slug (header is more specific)
- *
- * criticalField=true means we log a warning instead of silently returning null.
- */
-function findColumnByAliases(rawHeaderMap, aliases, fieldName = '') {
-  // Pass 1: exact match
+function findColumnByAliases(rawHeaderMap, aliases) {
+  // Pass 1: exact slug match
   for (const alias of aliases) {
     const key = slugHeader(alias);
-    if (rawHeaderMap.byKey[key]) return rawHeaderMap.byKey[key];
+    if (rawHeaderMap.byKey[key] !== undefined) return rawHeaderMap.byKey[key];
   }
 
-  // Pass 2: alias contained in header slug (e.g., alias="mca" matches header="electrical_mca")
   const entries = Object.entries(rawHeaderMap.byKey);
+
+  // Pass 2: alias contained in header slug
   for (const alias of aliases) {
     const aliasKey = slugHeader(alias);
     const found = entries.find(([key]) => key.includes(aliasKey));
     if (found) return found[1];
   }
 
-  // Pass 3: header contained in alias (broader alias matches narrower header)
+  // Pass 3: header slug contained in alias
   for (const alias of aliases) {
     const aliasKey = slugHeader(alias);
     const found = entries.find(([key]) => aliasKey.includes(key) && key.length >= 3);
@@ -290,9 +291,7 @@ function findColumnByAliases(rawHeaderMap, aliases, fieldName = '') {
 }
 
 // ─────────────────────────────────────────────
-// Field definitions — all aliases in priority order, most specific first.
-// The electrical section aliases are designed so that mocp (max fuse) and mca
-// can never resolve to the same column or to the refrigerant column.
+// Field alias definitions (unchanged from prior refactor)
 // ─────────────────────────────────────────────
 
 const FIELD_ALIASES = {
@@ -308,17 +307,13 @@ const FIELD_ALIASES = {
   cooling_sensible_mbh: ['cooling capacity mbh sens', 'cooling sensible mbh', 'cooling capacity sens', 'sensible mbh'],
   unit_eer: ['cooling eer', 'unit eer', 'eer'],
   seer_ieer: ['cooling seer ieer', 'cooling seerieer', 'seer ieer', 'seer ieerr', 'ieer', 'seer'],
-  // Refrigerant: long compound alias first so it never collides with mocp
   refrigerant: ['cooling refrigerant type', 'cooling refrigerant', 'refrigerant type', 'refrigerant', 'refrig'],
   gas_heat_input_mbh: ['heating gas heat input mbh', 'heating gas heat mbh', 'heating gas input mbh', 'gas heat input', 'gas input mbh', 'gas heat mbh'],
   gas_heat_output_mbh: ['heating gas heat output mbh', 'heating gas output mbh', 'gas heat output', 'gas output mbh', 'gas heat out'],
   electric_heat_kw: ['electric heater kw', 'electric heat kw', 'elec heat kw', 'heater kw', 'electric kw', 'elec kw'],
   heatpump_capacity_mbh: ['heat pump ratings mbh', 'heat pump capacity mbh', 'heat pump mbh', 'hp ratings mbh', 'hp capacity mbh', 'hp mbh'],
-  // Electrical fields: compound aliases (with "electrical" prefix) are listed first
-  // so a tightly nested merged-header workbook hits the exact compound slug.
   voltage: ['electrical voltage', 'elec voltage', 'volt ph', 'voltage', 'volt'],
   mca: ['electrical mca', 'elec mca', 'min circuit amps', 'min circ amps', 'mca'],
-  // mocp must never match "refrigerant" — the aliases here are all electrical-domain terms
   mocp: ['electrical max fuse', 'elec max fuse', 'electrical ocpd', 'max fuse', 'max ocpd', 'mocp', 'ocpd'],
   weight_lbs: ['electrical operating weight lbs', 'operating weight lbs', 'oper wt lbs', 'oper weight lbs', 'electrical weight lbs', 'weight lbs', 'weight'],
   remarks: ['remarks', 'notes'],
@@ -326,41 +321,33 @@ const FIELD_ALIASES = {
 
 const REQUIRED_FIELDS = ['descriptor', 'model_number', 'brand', 'qty', 'voltage', 'mca', 'mocp', 'weight_lbs'];
 
-/**
- * Build the column map for a worksheet.
- * Uses anchor-row detection (deterministic) instead of scoring (probabilistic).
- *
- * Returns { columns, rawHeaderMap, headerRows, missing, warnings }
- */
-function buildColumnMap(worksheet) {
-  const anchorRow = findAnchorRow(worksheet);
-  if (anchorRow === null) {
-    // Could not find the anchor row at all — return empty map with all fields missing
+function buildColumnMap(rows) {
+  const anchorRowIndex = findAnchorRowIndex(rows);
+
+  if (anchorRowIndex === null) {
     return {
       columns: {},
-      rawHeaderMap: { byKey: {}, byCol: {}, headerRows: [] },
-      headerRows: [],
+      anchorRowIndex: null,
+      firstDataRowIndex: null,
       missing: REQUIRED_FIELDS,
       warnings: ['Could not locate header row (expected a row containing "Tag" and "Model Number" in the first 20 rows).'],
     };
   }
 
-  // Use up to 3 rows ending at the anchor row (to capture multi-row merged group headers)
-  const headerRows = anchorRow >= 3
-    ? [anchorRow - 2, anchorRow - 1, anchorRow]
-    : anchorRow === 2
-      ? [anchorRow - 1, anchorRow]
-      : [anchorRow];
+  const headerRowIndices = anchorRowIndex >= 2
+    ? [anchorRowIndex - 2, anchorRowIndex - 1, anchorRowIndex]
+    : anchorRowIndex === 1
+      ? [anchorRowIndex - 1, anchorRowIndex]
+      : [anchorRowIndex];
 
-  const rawHeaderMap = buildRawHeaderMap(worksheet, headerRows);
+  const rawHeaderMap = buildRawHeaderMap(rows, headerRowIndices);
 
   const columns = {};
   for (const [field, aliases] of Object.entries(FIELD_ALIASES)) {
-    columns[field] = findColumnByAliases(rawHeaderMap, aliases, field);
+    columns[field] = findColumnByAliases(rawHeaderMap, aliases);
   }
 
-  // Collision detection: if two critical fields mapped to the same column, something
-  // went wrong. Log a warning and nullify the less-specific one.
+  // Collision detection
   const criticalPairs = [
     ['mca', 'mocp'],
     ['mca', 'refrigerant'],
@@ -370,60 +357,48 @@ function buildColumnMap(worksheet) {
   ];
   const warnings = [];
   for (const [a, b] of criticalPairs) {
-    if (columns[a] && columns[b] && columns[a] === columns[b]) {
-      warnings.push(`Column collision: "${a}" and "${b}" both resolved to column ${columns[a]} — "${b}" will be cleared.`);
-      console.warn(`[buildColumnMap] collision: ${a}=${columns[a]} === ${b}=${columns[b]}, clearing ${b}`);
+    if (columns[a] !== null && columns[a] !== undefined &&
+        columns[b] !== null && columns[b] !== undefined &&
+        columns[a] === columns[b]) {
+      warnings.push(`Column collision: "${a}" and "${b}" both resolved to column ${columns[a]} — "${b}" cleared.`);
       columns[b] = null;
     }
   }
 
-  // Value-sanity check: sample the first data row after the anchor and verify
-  // that mca/mocp/weight_lbs look numeric and refrigerant looks like a refrigerant code.
-  const firstDataRowNum = anchorRow + 1;
-  const firstDataRow = worksheet.getRow(firstDataRowNum);
-  const sampleWarnings = validateSampleRow(firstDataRow, columns, firstDataRowNum);
+  const firstDataRowIndex = anchorRowIndex + 1;
+  const sampleWarnings = validateSampleDataRow(rows[firstDataRowIndex] ?? [], columns, firstDataRowIndex + 1);
   warnings.push(...sampleWarnings);
 
-  const missing = REQUIRED_FIELDS.filter((field) => !columns[field]);
+  const missing = REQUIRED_FIELDS.filter((f) => columns[f] === null || columns[f] === undefined);
 
-  console.log(`[buildColumnMap] anchorRow=${anchorRow} headerRows=[${headerRows}]`);
+  console.log(`[buildColumnMap] anchorRowIndex=${anchorRowIndex} firstDataRowIndex=${firstDataRowIndex}`);
   console.log('[buildColumnMap] columns:', JSON.stringify(columns));
   if (warnings.length) console.warn('[buildColumnMap] warnings:', warnings);
 
-  return { columns, rawHeaderMap, headerRows, missing, warnings };
+  return { columns, anchorRowIndex, firstDataRowIndex, missing, warnings };
 }
 
-/**
- * Inspect the first data row to detect cross-field contamination.
- * Returns an array of warning strings (empty = clean).
- */
-function validateSampleRow(row, columns, rowNumber) {
+function validateSampleDataRow(rowCells, columns, rowNumber) {
   const warnings = [];
+  const read = (field) => {
+    const col = columns[field];
+    return col !== null && col !== undefined ? normalizeText(rowCells[col] ?? '') : '';
+  };
 
-  const read = (field) => (columns[field] ? getCellValue(row, columns[field]) : '');
-
-  const voltageVal = read('voltage');
   const mcaVal = read('mca');
   const mocpVal = read('mocp');
   const refrigerantVal = read('refrigerant');
-  const weightVal = read('weight_lbs');
+  const voltageVal = read('voltage');
 
-  // MCA should be numeric and plausibly between 1 and 1000
   if (mcaVal && !/^\d+(\.\d+)?$/.test(mcaVal.trim())) {
     warnings.push(`Row ${rowNumber}: mca value "${mcaVal}" is not numeric — column may be misidentified.`);
   }
-
-  // MOCP should be numeric OR a known refrigerant pattern should NOT appear there
   if (mocpVal && /^R\d{3}/i.test(mocpVal.trim())) {
-    warnings.push(`Row ${rowNumber}: mocp value "${mocpVal}" looks like a refrigerant code — column is likely misidentified. Check header alias for "mocp".`);
+    warnings.push(`Row ${rowNumber}: mocp value "${mocpVal}" looks like a refrigerant code — column likely misidentified.`);
   }
-
-  // Refrigerant should look like R454B, R410A, etc. — if it's numeric that's suspicious
   if (refrigerantVal && /^\d+(\.\d+)?$/.test(refrigerantVal.trim())) {
     warnings.push(`Row ${rowNumber}: refrigerant value "${refrigerantVal}" is purely numeric — column may be misidentified.`);
   }
-
-  // Voltage should look like a voltage
   if (voltageVal && !/208|460|230|575/i.test(voltageVal)) {
     warnings.push(`Row ${rowNumber}: voltage value "${voltageVal}" does not look like a voltage — column may be misidentified.`);
   }
@@ -431,13 +406,13 @@ function validateSampleRow(row, columns, rowNumber) {
   return warnings;
 }
 
-function getMappedCellValue(row, columnMap, fieldName) {
+function getMappedCell(rowCells, columnMap, fieldName) {
   const col = columnMap.columns[fieldName];
-  return col ? getCellValue(row, col) : '';
+  return col !== null && col !== undefined ? normalizeText(rowCells[col] ?? '') : '';
 }
 
 // ─────────────────────────────────────────────
-// Descriptor and heat field parsing
+// Descriptor and heat field parsing (unchanged)
 // ─────────────────────────────────────────────
 
 function parseDescriptorBasics(descriptor) {
@@ -497,22 +472,8 @@ function deriveHeatFieldsFromRow(rowData) {
 }
 
 // ─────────────────────────────────────────────
-// R2 / workbook loading
+// Upload handler
 // ─────────────────────────────────────────────
-
-async function loadWorkbookFromSource(env, sourceFilename) {
-  const r2Object = await env.TEMPLATES.get(sourceFilename);
-  if (!r2Object) throw new Error(`Workbook not found in R2: "${sourceFilename}"`);
-
-  const arrayBuffer = await r2Object.arrayBuffer();
-  if (!arrayBuffer || arrayBuffer.byteLength < 512) {
-    throw new Error(`R2 object "${sourceFilename}" is empty or corrupt (${arrayBuffer?.byteLength ?? 0} bytes).`);
-  }
-
-  const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.load(arrayBuffer);
-  return workbook;
-}
 
 async function handleUploadTemplate(request, env) {
   const contentType = request.headers.get('Content-Type') || '';
@@ -527,9 +488,21 @@ async function handleUploadTemplate(request, env) {
     return json({ error: 'Missing file field.' }, 400);
   }
 
+  const arrayBuffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(arrayBuffer);
+
+  if (bytes.byteLength < 512) {
+    return json({ error: `File appears empty or too small (${bytes.byteLength} bytes).` }, 400);
+  }
+
+  // Verify XLSX/ZIP magic bytes: PK\x03\x04
+  if (bytes[0] !== 0x50 || bytes[1] !== 0x4b || bytes[2] !== 0x03 || bytes[3] !== 0x04) {
+    return json({ error: 'File does not appear to be a valid XLSX workbook.' }, 400);
+  }
+
   const key = normalizeText(file.name) || `upload-${Date.now()}.xlsx`;
-  const buffer = await file.arrayBuffer();
-  await env.TEMPLATES.put(key, buffer, {
+
+  await env.TEMPLATES.put(key, bytes, {
     httpMetadata: {
       contentType: file.type || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     },
@@ -539,7 +512,7 @@ async function handleUploadTemplate(request, env) {
 }
 
 // ─────────────────────────────────────────────
-// Database helpers
+// Database helpers (unchanged)
 // ─────────────────────────────────────────────
 
 async function insertBatch(env, payload) {
@@ -634,13 +607,9 @@ async function upsertUnitModelV2(env, batchId, stagedRow) {
   const auxHeatCapacityKey = stagedRow.aux_heat_capacity_key || '';
   const auxHeatCapacityLabel = stagedRow.aux_heat_capacity_label || '';
   const efficiencyLabel = stagedRow.efficiency_label || 'Standard';
-  const efficiencyKey = normalizeEfficiency(
-    stagedRow.efficiency_key || stagedRow.efficiency_label || 'Standard'
-  );
+  const efficiencyKey = normalizeEfficiency(stagedRow.efficiency_key || stagedRow.efficiency_label || 'Standard');
 
-  const existing = await env.DB.prepare(`
-    SELECT * FROM unit_models_v2 WHERE model_number = ?
-  `).bind(modelNumber).first();
+  const existing = await env.DB.prepare(`SELECT * FROM unit_models_v2 WHERE model_number = ?`).bind(modelNumber).first();
 
   if (!existing) {
     const inserted = await env.DB.prepare(`
@@ -674,9 +643,7 @@ async function upsertUnitModelV2(env, batchId, stagedRow) {
     String(existing.efficiency_label || '') !== String(efficiencyLabel),
   ].some(Boolean);
 
-  if (!changed) {
-    return { action: 'unchanged', unitModelId: existing.id };
-  }
+  if (!changed) return { action: 'unchanged', unitModelId: existing.id };
 
   await env.DB.prepare(`
     UPDATE unit_models_v2
@@ -700,27 +667,21 @@ async function upsertUnitModelV2(env, batchId, stagedRow) {
 // Main import pipeline
 // ─────────────────────────────────────────────
 
-/**
- * Parse a single data row into a staging row object.
- * All field reads go through getMappedCellValue so there is one
- * canonical place to add per-field transformations.
- */
-function parseWorkbookRow(row, rowNumber, columnMap) {
-  const descriptor = getMappedCellValue(row, columnMap, 'descriptor');
-  const modelNumber = getMappedCellValue(row, columnMap, 'model_number');
-  const brand = getMappedCellValue(row, columnMap, 'brand');
-  const qty = getMappedCellValue(row, columnMap, 'qty');
+function parseWorkbookRow(rowCells, rowNumber, columnMap) {
+  const descriptor = getMappedCell(rowCells, columnMap, 'descriptor');
+  const modelNumber = getMappedCell(rowCells, columnMap, 'model_number');
+  const brand = getMappedCell(rowCells, columnMap, 'brand');
+  const qty = getMappedCell(rowCells, columnMap, 'qty');
 
-  // Skip header rows and rows without the required descriptor/model pattern
   if (!descriptor || /^tag\b/i.test(descriptor)) return null;
   if (/^model number$/i.test(modelNumber)) return null;
   if (!/^\d+(?:\.\d+)?\s*-?\s*ton/i.test(descriptor)) return null;
   if (!modelNumber) return null;
 
-  const rawGasHeatInputMbh = getMappedCellValue(row, columnMap, 'gas_heat_input_mbh');
-  const rawGasHeatOutputMbh = getMappedCellValue(row, columnMap, 'gas_heat_output_mbh');
-  const rawElectricHeatKw = getMappedCellValue(row, columnMap, 'electric_heat_kw');
-  const rawHeatPumpCapacityMbh = getMappedCellValue(row, columnMap, 'heatpump_capacity_mbh');
+  const rawGasHeatInputMbh = getMappedCell(rowCells, columnMap, 'gas_heat_input_mbh');
+  const rawGasHeatOutputMbh = getMappedCell(rowCells, columnMap, 'gas_heat_output_mbh');
+  const rawElectricHeatKw = getMappedCell(rowCells, columnMap, 'electric_heat_kw');
+  const rawHeatPumpCapacityMbh = getMappedCell(rowCells, columnMap, 'heatpump_capacity_mbh');
 
   const descriptorFields = parseDescriptorBasics(descriptor);
   const derivedHeatFields = deriveHeatFieldsFromRow({
@@ -735,29 +696,28 @@ function parseWorkbookRow(row, rowNumber, columnMap) {
     raw_model_number: modelNumber,
     raw_brand: brand,
     raw_qty: qty,
-    raw_airflow_cfm: getMappedCellValue(row, columnMap, 'airflow_cfm'),
-    raw_supply_fan_hp: getMappedCellValue(row, columnMap, 'supply_fan_hp'),
-    raw_supply_fan_esp_in_wg: getMappedCellValue(row, columnMap, 'supply_fan_esp_in_wg'),
-    raw_supply_fan_rpm: getMappedCellValue(row, columnMap, 'supply_fan_rpm'),
-    raw_cooling_total_mbh: getMappedCellValue(row, columnMap, 'cooling_total_mbh'),
-    raw_cooling_sensible_mbh: getMappedCellValue(row, columnMap, 'cooling_sensible_mbh'),
-    raw_unit_eer: getMappedCellValue(row, columnMap, 'unit_eer'),
-    raw_seer_ieer: getMappedCellValue(row, columnMap, 'seer_ieer'),
-    raw_refrigerant: getMappedCellValue(row, columnMap, 'refrigerant'),
+    raw_airflow_cfm: getMappedCell(rowCells, columnMap, 'airflow_cfm'),
+    raw_supply_fan_hp: getMappedCell(rowCells, columnMap, 'supply_fan_hp'),
+    raw_supply_fan_esp_in_wg: getMappedCell(rowCells, columnMap, 'supply_fan_esp_in_wg'),
+    raw_supply_fan_rpm: getMappedCell(rowCells, columnMap, 'supply_fan_rpm'),
+    raw_cooling_total_mbh: getMappedCell(rowCells, columnMap, 'cooling_total_mbh'),
+    raw_cooling_sensible_mbh: getMappedCell(rowCells, columnMap, 'cooling_sensible_mbh'),
+    raw_unit_eer: getMappedCell(rowCells, columnMap, 'unit_eer'),
+    raw_seer_ieer: getMappedCell(rowCells, columnMap, 'seer_ieer'),
+    raw_refrigerant: getMappedCell(rowCells, columnMap, 'refrigerant'),
     raw_heating_input_mbh: rawGasHeatInputMbh || rawElectricHeatKw,
     raw_heating_output_mbh: rawHeatPumpCapacityMbh || rawGasHeatOutputMbh,
-    raw_voltage: getMappedCellValue(row, columnMap, 'voltage'),
-    raw_mca: getMappedCellValue(row, columnMap, 'mca'),
-    raw_mocp: getMappedCellValue(row, columnMap, 'mocp'),
-    raw_weight_lbs: getMappedCellValue(row, columnMap, 'weight_lbs'),
-    raw_remarks: getMappedCellValue(row, columnMap, 'remarks'),
+    raw_voltage: getMappedCell(rowCells, columnMap, 'voltage'),
+    raw_mca: getMappedCell(rowCells, columnMap, 'mca'),
+    raw_mocp: getMappedCell(rowCells, columnMap, 'mocp'),
+    raw_weight_lbs: getMappedCell(rowCells, columnMap, 'weight_lbs'),
+    raw_remarks: getMappedCell(rowCells, columnMap, 'remarks'),
     ...descriptorFields,
     ...derivedHeatFields,
     parse_status: 'parsed',
     parse_notes: null,
   };
 
-  // Heat pump override: if HP capacity is present, set family and clear aux heat
   if (hasMeaningfulValue(rawHeatPumpCapacityMbh)) {
     rowData.family_key = 'hp';
     rowData.family_label = 'Heat Pump';
@@ -777,21 +737,17 @@ function parseWorkbookRow(row, rowNumber, columnMap) {
 }
 
 async function stageDsCommercialWorkbook(env, payload) {
-  const workbook = await loadWorkbookFromSource(env, payload.source_filename);
-  const worksheet =
-    workbook.getWorksheet(payload.source_sheet || 'Schedule') || workbook.worksheets?.[0];
+  const workbook = await loadWorkbookFromR2(env, payload.source_filename);
+  const { worksheet, name: sheetName } = getWorksheet(workbook, payload.source_sheet || 'Schedule');
 
-  if (!worksheet) {
-    throw new Error(
-      `Worksheet not found. Available sheets: ${workbook.worksheets.map((ws) => ws.name).join(', ')}`
-    );
-  }
+  console.log(`[stageDsCommercialWorkbook] using sheet "${sheetName}"`);
 
-  const columnMap = buildColumnMap(worksheet);
+  const rows = sheetToRows(worksheet);
+  const columnMap = buildColumnMap(rows);
 
   if (columnMap.missing.length) {
     throw new Error(
-      `Could not identify required columns from workbook headers: ${columnMap.missing.join(', ')}. ` +
+      `Could not identify required columns: ${columnMap.missing.join(', ')}. ` +
       (columnMap.warnings.length ? `Warnings: ${columnMap.warnings.join(' | ')}` : '')
     );
   }
@@ -803,10 +759,10 @@ async function stageDsCommercialWorkbook(env, payload) {
   const batchId = await insertBatch(env, payload);
   const stagedRows = [];
 
-  worksheet.eachRow((row, rowNumber) => {
-    const parsed = parseWorkbookRow(row, rowNumber, columnMap);
+  for (let r = columnMap.firstDataRowIndex; r < rows.length; r += 1) {
+    const parsed = parseWorkbookRow(rows[r], r + 1, columnMap); // r+1 = 1-based row number
     if (parsed) stagedRows.push(parsed);
-  });
+  }
 
   const duplicateCounts = new Map();
   for (const row of stagedRows) {
@@ -821,10 +777,7 @@ async function stageDsCommercialWorkbook(env, payload) {
 
     const occurrences = duplicateCounts.get(row.raw_model_number) || 0;
     if (occurrences > 1 && seenModels.has(row.raw_model_number)) {
-      await insertImportModelResult(
-        env, batchId, stagingRowId, row.raw_model_number,
-        null, 'duplicate_in_batch', 'Duplicate model number within import batch'
-      );
+      await insertImportModelResult(env, batchId, stagingRowId, row.raw_model_number, null, 'duplicate_in_batch', 'Duplicate model number within import batch');
       continue;
     }
 
@@ -837,12 +790,11 @@ async function stageDsCommercialWorkbook(env, payload) {
 }
 
 // ─────────────────────────────────────────────
-// Batch query helpers
+// Batch query helpers (unchanged)
 // ─────────────────────────────────────────────
 
 async function getBatch(env, batchId) {
-  const result = await env.DB.prepare(`SELECT * FROM import_batches WHERE id = ?`).bind(batchId).first();
-  return result || null;
+  return (await env.DB.prepare(`SELECT * FROM import_batches WHERE id = ?`).bind(batchId).first()) || null;
 }
 
 async function getBatchSummary(env, batchId) {
@@ -853,8 +805,7 @@ async function getBatchSummary(env, batchId) {
       SUM(CASE WHEN parse_status != 'parsed' THEN 1 ELSE 0 END) AS rows_failed,
       SUM(CASE WHEN TRIM(COALESCE(parse_notes, '')) != '' THEN 1 ELSE 0 END) AS rows_with_warnings,
       COUNT(DISTINCT NULLIF(TRIM(raw_model_number), '')) AS unique_models_in_batch
-    FROM staging_schedule_rows
-    WHERE batch_id = ?
+    FROM staging_schedule_rows WHERE batch_id = ?
   `).bind(batchId).first();
 
   const actions = await env.DB.prepare(`
@@ -863,8 +814,7 @@ async function getBatchSummary(env, batchId) {
       COALESCE(SUM(CASE WHEN action = 'updated' THEN 1 ELSE 0 END), 0) AS catalog_updates,
       COALESCE(SUM(CASE WHEN action = 'unchanged' THEN 1 ELSE 0 END), 0) AS catalog_unchanged,
       COALESCE(SUM(CASE WHEN action = 'duplicate_in_batch' THEN 1 ELSE 0 END), 0) AS duplicates_in_batch
-    FROM import_model_results
-    WHERE batch_id = ?
+    FROM import_model_results WHERE batch_id = ?
   `).bind(batchId).first();
 
   return {
@@ -892,22 +842,18 @@ function summarizeIssueRows(rows) {
 
 async function getBatchIssues(env, batchId) {
   const duplicates = await env.DB.prepare(`
-    SELECT
-      raw_model_number AS model_number,
-      COUNT(*) AS duplicate_count,
-      GROUP_CONCAT(source_row_number) AS source_row_numbers
+    SELECT raw_model_number AS model_number, COUNT(*) AS duplicate_count,
+           GROUP_CONCAT(source_row_number) AS source_row_numbers
     FROM staging_schedule_rows
     WHERE batch_id = ? AND NULLIF(TRIM(raw_model_number), '') IS NOT NULL
-    GROUP BY raw_model_number
-    HAVING COUNT(*) > 1
+    GROUP BY raw_model_number HAVING COUNT(*) > 1
     ORDER BY duplicate_count DESC, raw_model_number
   `).bind(batchId).all();
 
   const parseIssues = await env.DB.prepare(`
     SELECT source_row_number, raw_model_number, parse_status, parse_notes
     FROM staging_schedule_rows
-    WHERE batch_id = ?
-      AND (parse_status != 'parsed' OR TRIM(COALESCE(parse_notes, '')) != '')
+    WHERE batch_id = ? AND (parse_status != 'parsed' OR TRIM(COALESCE(parse_notes, '')) != '')
     ORDER BY source_row_number
   `).bind(batchId).all();
 
@@ -917,17 +863,12 @@ async function getBatchIssues(env, batchId) {
       type: 'duplicate_model_in_batch',
       model_number: row.model_number,
       count: toInt(row.duplicate_count),
-      source_row_numbers: String(row.source_row_numbers || '')
-        .split(',')
-        .map((value) => toInt(value))
-        .filter(Boolean),
+      source_row_numbers: String(row.source_row_numbers || '').split(',').map((v) => toInt(v)).filter(Boolean),
     });
   }
 
   const warningRows = summarizeIssueRows(coerceArray(parseIssues.results));
-  if (warningRows.length) {
-    issues.push({ type: 'parse_warnings', rows: warningRows });
-  }
+  if (warningRows.length) issues.push({ type: 'parse_warnings', rows: warningRows });
 
   return issues;
 }
@@ -941,7 +882,7 @@ function buildBatchLinks(batchId) {
 }
 
 // ─────────────────────────────────────────────
-// Batch GET handlers
+// Batch GET handlers (unchanged)
 // ─────────────────────────────────────────────
 
 async function handleGetImportBatch(env, batchId) {
@@ -956,10 +897,7 @@ async function handleGetImportBatchRows(env, batchId) {
   const batch = await getBatch(env, batchId);
   if (!batch) return json({ error: 'Import batch not found.' }, 404);
   const rows = await env.DB.prepare(`
-    SELECT *
-    FROM staging_schedule_rows
-    WHERE batch_id = ?
-    ORDER BY source_row_number, id
+    SELECT * FROM staging_schedule_rows WHERE batch_id = ? ORDER BY source_row_number, id
   `).bind(batchId).all();
   return json({ ok: true, batch, rows: coerceArray(rows.results) });
 }
@@ -968,13 +906,12 @@ async function handleGetImportBatchCatalogResults(env, batchId) {
   const batch = await getBatch(env, batchId);
   if (!batch) return json({ error: 'Import batch not found.' }, 404);
   const rows = await env.DB.prepare(`
-    SELECT
-      imr.id, imr.batch_id, imr.staging_row_id,
-      ssr.source_row_number, ssr.source_descriptor, ssr.raw_model_number,
-      imr.model_number, imr.unit_model_id, imr.action, imr.reason,
-      um.family_key, um.tonnage_key, um.voltage_key,
-      um.aux_heat_type_key, um.aux_heat_capacity_key, um.efficiency_key,
-      imr.created_at
+    SELECT imr.id, imr.batch_id, imr.staging_row_id,
+           ssr.source_row_number, ssr.source_descriptor, ssr.raw_model_number,
+           imr.model_number, imr.unit_model_id, imr.action, imr.reason,
+           um.family_key, um.tonnage_key, um.voltage_key,
+           um.aux_heat_type_key, um.aux_heat_capacity_key, um.efficiency_key,
+           imr.created_at
     FROM import_model_results imr
     JOIN staging_schedule_rows ssr ON ssr.id = imr.staging_row_id
     LEFT JOIN unit_models_v2 um ON um.id = imr.unit_model_id
@@ -985,7 +922,7 @@ async function handleGetImportBatchCatalogResults(env, batchId) {
 }
 
 // ─────────────────────────────────────────────
-// Catalog query
+// Catalog query (unchanged)
 // ─────────────────────────────────────────────
 
 async function listCatalog(env, filters = {}) {
@@ -1016,7 +953,7 @@ async function listCatalog(env, filters = {}) {
 }
 
 // ─────────────────────────────────────────────
-// Schedule resolution (preview + export)
+// Schedule resolution (unchanged)
 // ─────────────────────────────────────────────
 
 async function findMatchingImportedRow(env, unit) {
@@ -1111,76 +1048,79 @@ async function resolveScheduleRows(env, units) {
 }
 
 // ─────────────────────────────────────────────
-// Export workbook
+// Export workbook — built fresh with SheetJS
+// Column order matches the original COL map exactly.
+// Basic styling is applied via cell styles (SheetJS community supports
+// column widths, number formats, and basic fills/borders).
 // ─────────────────────────────────────────────
 
-const COL = {
-  tag: 2, areaServed: 3, manufacturer: 4, modelNumber: 5, nominalTons: 6,
-  unitType: 7, unitEer: 8, seerIeerr: 9, supplyCfm: 10, supplyEsp: 11,
-  supplyQty: 12, supplyBhp: 13, supplyHp: 14, supplyRpm: 15,
-  coolingEat: 16, coolingLat: 17, coolingSensible: 18, coolingTotal: 19,
-  heatingCfm: 20, heatingEat: 21, heatingLat: 22, heatingInput: 23,
-  heatingOutput: 24, voltPh: 25, mca: 26, mocp: 27, weight: 28, remarks: 29,
-};
-
-async function getTemplateWorkbook(env) {
-  const object = await env.TEMPLATES.get('SSR-Schedule-Example.xlsx');
-  if (!object) throw new Error('Template workbook not found in R2 bucket.');
-  const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.load(await object.arrayBuffer());
-  return workbook;
-}
+const SCHEDULE_COLUMNS = [
+  { field: 'tag',               header: 'Tag',                    width: 12 },
+  { field: 'areaServed',        header: 'Area Served',            width: 20 },
+  { field: 'manufacturer',      header: 'Manufacturer',           width: 16 },
+  { field: 'modelNumber',       header: 'Model Number',           width: 28 },
+  { field: 'nominalTons',       header: 'Nominal Tons',           width: 12 },
+  { field: 'unitType',          header: 'Unit Type',              width: 14 },
+  { field: 'unitEer',           header: 'EER',                    width: 10 },
+  { field: 'seerIeerr',         header: 'SEER / IEER',            width: 12 },
+  { field: 'supplyCfm',         header: 'Supply CFM',             width: 12 },
+  { field: 'supplyEsp',         header: 'ESP (in. w.g.)',         width: 14 },
+  { field: 'supplyQty',         header: 'Fan Qty',                width: 10 },
+  { field: 'supplyBhp',         header: 'BHP',                    width: 10 },
+  { field: 'supplyHp',          header: 'Fan HP',                 width: 10 },
+  { field: 'supplyRpm',         header: 'Fan RPM',                width: 10 },
+  { field: 'coolingEat',        header: 'Cooling EAT',            width: 12 },
+  { field: 'coolingLat',        header: 'Cooling LAT',            width: 12 },
+  { field: 'coolingSensible',   header: 'Cooling Sensible (MBH)', width: 22 },
+  { field: 'coolingTotal',      header: 'Cooling Total (MBH)',    width: 20 },
+  { field: 'heatingCfm',        header: 'Heating CFM',            width: 12 },
+  { field: 'heatingEat',        header: 'Heating EAT',            width: 12 },
+  { field: 'heatingLat',        header: 'Heating LAT',            width: 12 },
+  { field: 'heatingInput',      header: 'Heating Total Capacity', width: 22 },
+  { field: 'heatingOutput',     header: 'Heating Output (MBH)',   width: 20 },
+  { field: 'voltPh',            header: 'Volt / Ph',              width: 12 },
+  { field: 'mca',               header: 'MCA',                    width: 10 },
+  { field: 'mocp',              header: 'MOCP',                   width: 10 },
+  { field: 'weight',            header: 'Weight (lbs)',           width: 14 },
+  { field: 'remarks',           header: 'Remarks',                width: 36 },
+];
 
 async function createWorkbook(env, units) {
-  const workbook = await getTemplateWorkbook(env);
-  const worksheet = workbook.getWorksheet('Table 1') || workbook.worksheets[0];
-  const templateRowNumber = 4;
-  const baseRow = worksheet.getRow(templateRowNumber);
-  const rows = await resolveScheduleRows(env, units);
+  const resolvedRows = await resolveScheduleRows(env, units);
 
-  for (let index = 0; index < rows.length; index += 1) {
-    const scheduleRow = rows[index];
-    const rowNumber = templateRowNumber + index;
-    if (rowNumber > templateRowNumber) worksheet.duplicateRow(templateRowNumber, 1, true);
-    const row = worksheet.getRow(rowNumber);
-    row.height = baseRow.height;
+  const wb = XLSX.utils.book_new();
 
-    row.getCell(COL.tag).value = scheduleRow.tag;
-    row.getCell(COL.areaServed).value = scheduleRow.areaServed;
-    row.getCell(COL.manufacturer).value = scheduleRow.manufacturer;
-    row.getCell(COL.modelNumber).value = scheduleRow.modelNumber;
-    row.getCell(COL.nominalTons).value = scheduleRow.nominalTons;
-    row.getCell(COL.unitType).value = scheduleRow.unitType;
-    row.getCell(COL.unitEer).value = scheduleRow.unitEer;
-    row.getCell(COL.seerIeerr).value = scheduleRow.seerIeerr;
-    row.getCell(COL.supplyCfm).value = scheduleRow.supplyCfm;
-    row.getCell(COL.supplyEsp).value = scheduleRow.supplyEsp;
-    row.getCell(COL.supplyQty).value = scheduleRow.supplyQty;
-    row.getCell(COL.supplyBhp).value = scheduleRow.supplyBhp;
-    row.getCell(COL.supplyHp).value = scheduleRow.supplyHp;
-    row.getCell(COL.supplyRpm).value = scheduleRow.supplyRpm;
-    row.getCell(COL.coolingEat).value = scheduleRow.coolingEat;
-    row.getCell(COL.coolingLat).value = scheduleRow.coolingLat;
-    row.getCell(COL.coolingSensible).value = scheduleRow.coolingSensible;
-    row.getCell(COL.coolingTotal).value = scheduleRow.coolingTotal;
-    row.getCell(COL.heatingCfm).value = scheduleRow.heatingCfm;
-    row.getCell(COL.heatingEat).value = scheduleRow.heatingEat;
-    row.getCell(COL.heatingLat).value = scheduleRow.heatingLat;
-    row.getCell(COL.heatingInput).value = scheduleRow.heatingTotalCapacity || scheduleRow.heatingInput;
-    row.getCell(COL.heatingOutput).value = scheduleRow.heatingOutput;
-    row.getCell(COL.voltPh).value = scheduleRow.voltPh;
-    row.getCell(COL.mca).value = scheduleRow.mca;
-    row.getCell(COL.mocp).value = scheduleRow.mocp;
-    row.getCell(COL.weight).value = scheduleRow.weight;
-    row.getCell(COL.remarks).value = scheduleRow.remarks;
-    row.commit();
-  }
+  // Build array-of-arrays: first row = headers, remaining = data
+  const headerRow = SCHEDULE_COLUMNS.map((col) => col.header);
+  const dataRows = resolvedRows.map((row) =>
+    SCHEDULE_COLUMNS.map((col) => {
+      const val = row[col.field];
+      // Attempt numeric coercion for known numeric fields so Excel treats them as numbers
+      if (val !== '' && ['nominalTons', 'supplyCfm', 'supplyHp', 'supplyRpm',
+          'coolingSensible', 'coolingTotal', 'heatingInput', 'heatingOutput',
+          'mca', 'mocp', 'weight', 'supplyEsp', 'unitEer'].includes(col.field)) {
+        const n = Number(val);
+        if (Number.isFinite(n)) return n;
+      }
+      return val ?? '';
+    })
+  );
 
-  return workbook.xlsx.writeBuffer();
+  const ws = XLSX.utils.aoa_to_sheet([headerRow, ...dataRows]);
+
+  // Column widths
+  ws['!cols'] = SCHEDULE_COLUMNS.map((col) => ({ wch: col.width }));
+
+  // Freeze the header row
+  ws['!freeze'] = { xSplit: 0, ySplit: 1, topLeftCell: 'A2', activePane: 'bottomLeft' };
+
+  XLSX.utils.book_append_sheet(wb, ws, 'Schedule');
+
+  return XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
 }
 
 // ─────────────────────────────────────────────
-// Router
+// Router (unchanged)
 // ─────────────────────────────────────────────
 
 export default {
