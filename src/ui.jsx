@@ -172,7 +172,10 @@ export default function App() {
         const response = await fetch('/api/preview-schedule', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ units: scheduledUnits })
+          body: JSON.stringify({
+            units: scheduledUnits,
+            batch_id: importResult?.batch?.id ?? null
+          })
         });
 
         if (!response.ok) {
@@ -201,7 +204,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [scheduledUnits]);
+  }, [scheduledUnits, importResult?.batch?.id]);
 
   const selectedOptionLabels = optionSummary(selection);
   const selectionCode = useMemo(() => buildSelectionCode(selection), [selection]);
@@ -327,7 +330,10 @@ export default function App() {
       const response = await fetch('/api/export-schedule', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ units: scheduledUnits })
+        body: JSON.stringify({
+          units: scheduledUnits,
+          batch_id: importResult?.batch?.id ?? null
+        })
       });
 
       if (!response.ok) {

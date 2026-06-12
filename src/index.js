@@ -64,6 +64,13 @@ function normalizeHeatCapacity(value) {
   return normalizeText(value);
 }
 
+function normalizeHeatCapacityKey(value) {
+  const numeric = normalizeNumericText(value);
+  if (numeric) return numeric;
+  const match = normalizeText(value).match(/([\d,.]+)/);
+  return match ? normalizeNumericText(match[1]) : '';
+}
+
 function normalizeTonnage(value) {
   return String(value ?? '').trim().replace(/\.0$/, '');
 }
@@ -310,7 +317,7 @@ function parseDescriptorBasics(descriptor) {
 
 function deriveHeatFields(gasInputMbh, gasOutputMbh, electricKw) {
   if (hasMeaningfulValue(gasInputMbh) || hasMeaningfulValue(gasOutputMbh)) {
-    const cap = normalizeNumericText(gasInputMbh) || normalizeNumericText(gasOutputMbh);
+    const cap = normalizeHeatCapacityKey(gasInputMbh) || normalizeHeatCapacityKey(gasOutputMbh);
     return {
       aux_heat_type_key: 'gas',
       aux_heat_type_label: 'Aluminum Gas Heat',
@@ -319,7 +326,7 @@ function deriveHeatFields(gasInputMbh, gasOutputMbh, electricKw) {
     };
   }
   if (hasMeaningfulValue(electricKw)) {
-    const cap = normalizeNumericText(electricKw);
+    const cap = normalizeHeatCapacityKey(electricKw);
     return {
       aux_heat_type_key: 'electric',
       aux_heat_type_label: 'Electric Heat',
@@ -609,6 +616,18 @@ async function getBatch(env, batchId) {
   return (await env.DB.prepare(`SELECT * FROM import_batches WHERE id=?`).bind(batchId).first()) || null;
 }
 
+async function resolveActiveBatchId(env, batchId) {
+  const id = toInt(batchId, NaN);
+  if (Number.isFinite(id) && id > 0) {
+    const batch = await getBatch(env, id);
+    if (batch) return batch.id;
+  }
+  const latest = await env.DB.prepare(
+    `SELECT id FROM import_batches ORDER BY id DESC LIMIT 1`
+  ).first();
+  return latest?.id ?? null;
+}
+
 async function getBatchSummary(env, batchId) {
   const totals = await env.DB.prepare(
     `SELECT COUNT(*) AS rows_staged,
@@ -737,13 +756,17 @@ async function listCatalog(env, filters) {
   return (await env.DB.prepare(sql).bind(...binds).all()).results;
 }
 
-async function findMatchingImportedRow(env, unit) {
-  // FIX: try direct model number lookup first if the UI already has one
+async function findMatchingImportedRow(env, unit, batchId = null) {
+  const activeBatchId = await resolveActiveBatchId(env, batchId);
+  if (!activeBatchId) return null;
+
   const requestedModel = normalizeText(unit.modelNumber ?? unit.selectedModelNumber ?? '');
   if (requestedModel) {
     const byModel = await env.DB.prepare(
-      `SELECT * FROM staging_schedule_rows WHERE raw_model_number=? AND parse_status='parsed' ORDER BY id DESC LIMIT 1`
-    ).bind(requestedModel).first();
+      `SELECT * FROM staging_schedule_rows
+       WHERE batch_id=? AND raw_model_number=? AND parse_status='parsed'
+       ORDER BY id DESC LIMIT 1`
+    ).bind(activeBatchId, requestedModel).first();
     if (byModel) return byModel;
   }
 
@@ -751,41 +774,52 @@ async function findMatchingImportedRow(env, unit) {
   const tonnage = String(unit.tonnage ?? '');
   const voltage = normalizeVoltage(unit.voltage);
   const heatType = normalizeHeatType(unit.heatType);
-  const heatCap = normalizeHeatCapacity(unit.heatCapacity);
+  const heatCapKey = heatType === 'None' ? '' : normalizeHeatCapacityKey(unit.heatCapacity);
 
-  // FIX: use CAST(? AS REAL) for numeric tonnage comparison so 7.5 == 7.5 and 8 == 8.0
   const exact = await env.DB.prepare(
     `SELECT * FROM staging_schedule_rows
-    WHERE family_label=?
-      AND tonnage_value=CAST(? AS REAL)
-      AND voltage_label=?
-      AND aux_heat_type_label=?
-      AND aux_heat_capacity_key=?
-      AND parse_status='parsed'
-    ORDER BY id DESC LIMIT 1`
-  ).bind(family, tonnage, voltage, heatType, heatType === 'None' ? '' : heatCap).first();
+     WHERE batch_id=?
+       AND family_label=?
+       AND tonnage_value=CAST(? AS REAL)
+       AND voltage_label=?
+       AND aux_heat_type_label=?
+       AND aux_heat_capacity_key=?
+       AND parse_status='parsed'
+     ORDER BY id DESC LIMIT 1`
+  ).bind(activeBatchId, family, tonnage, voltage, heatType, heatCapKey).first();
   if (exact) return exact;
 
-  // Relaxed: match on family + tonnage + voltage only
+  const byHeatType = await env.DB.prepare(
+    `SELECT * FROM staging_schedule_rows
+     WHERE batch_id=?
+       AND family_label=?
+       AND tonnage_value=CAST(? AS REAL)
+       AND voltage_label=?
+       AND aux_heat_type_label=?
+       AND parse_status='parsed'
+     ORDER BY id DESC LIMIT 1`
+  ).bind(activeBatchId, family, tonnage, voltage, heatType).first();
+  if (byHeatType) return byHeatType;
+
   const relaxed = await env.DB.prepare(
     `SELECT * FROM staging_schedule_rows
-    WHERE family_label=?
-      AND tonnage_value=CAST(? AS REAL)
-      AND voltage_label=?
-      AND parse_status='parsed'
-    ORDER BY id DESC LIMIT 1`
-  ).bind(family, tonnage, voltage).first();
+     WHERE batch_id=?
+       AND family_label=?
+       AND tonnage_value=CAST(? AS REAL)
+       AND voltage_label=?
+       AND parse_status='parsed'
+     ORDER BY id DESC LIMIT 1`
+  ).bind(activeBatchId, family, tonnage, voltage).first();
   if (relaxed) return relaxed;
 
-  // FIX: last-resort — match on family + tonnage alone, ignoring voltage
-  // This handles cases where voltage_label was stored blank during import
   const byFamilyTonnage = await env.DB.prepare(
     `SELECT * FROM staging_schedule_rows
-    WHERE family_label=?
-      AND tonnage_value=CAST(? AS REAL)
-      AND parse_status='parsed'
-    ORDER BY id DESC LIMIT 1`
-  ).bind(family, tonnage).first();
+     WHERE batch_id=?
+       AND family_label=?
+       AND tonnage_value=CAST(? AS REAL)
+       AND parse_status='parsed'
+     ORDER BY id DESC LIMIT 1`
+  ).bind(activeBatchId, family, tonnage).first();
   return byFamilyTonnage ?? null;
 }
 
@@ -846,11 +880,11 @@ function buildResolvedScheduleRow(unit, match, index = 0) {
   };
 }
 
-async function resolveScheduleRows(env, units) {
+async function resolveScheduleRows(env, units, batchId = null) {
   const rows = [];
   for (let i = 0; i < units.length; i++) {
     const unit = units[i];
-    const match = await findMatchingImportedRow(env, unit);
+    const match = await findMatchingImportedRow(env, unit, batchId);
     rows.push(buildResolvedScheduleRow(unit, match, i));
   }
   return rows;
@@ -887,7 +921,7 @@ function expandSheetRange(sheet, maxRow) {
   }
 }
 
-async function createWorkbook(env, units) {
+async function createWorkbook(env, units, batchId = null) {
   const obj = await env.TEMPLATES.get('SSR-Schedule-Example.xlsx');
   if (!obj) throw new Error('Template workbook not found in R2 bucket.');
   const buf = await obj.arrayBuffer();
@@ -895,7 +929,7 @@ async function createWorkbook(env, units) {
   const sheetName = workbook.SheetNames[0];
   const sheet = workbook.Sheets[sheetName];
   const templateRow = 4;
-  const rows = await resolveScheduleRows(env, units);
+  const rows = await resolveScheduleRows(env, units, batchId);
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
     const rowNum = templateRow + i;
@@ -969,7 +1003,8 @@ export default {
       try {
         const payload = await request.json();
         const units = Array.isArray(payload?.units) ? payload.units : [];
-        const rows = await resolveScheduleRows(env, units);
+        const batchId = payload?.batch_id ?? payload?.batchId ?? null;
+        const rows = await resolveScheduleRows(env, units, batchId);
         // FIX: was json(rows) — UI reads data.rows so must be wrapped object
         return json({ rows });
       } catch (e) {
@@ -994,7 +1029,8 @@ export default {
       try {
         const payload = await request.json();
         const units = Array.isArray(payload?.units) ? payload.units : [];
-        const file = await createWorkbook(env, units);
+        const batchId = payload?.batch_id ?? payload?.batchId ?? null;
+        const file = await createWorkbook(env, units, batchId);
         return new Response(file, {
           headers: {
             'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
