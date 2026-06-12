@@ -227,73 +227,178 @@ function findColumnByAliases(rawHeaderMap, aliases) {
   return null;
 }
 
-function scoreHeaderRows(sheet, headerRows) {
-  const rawHeaderMap = buildRawHeaderMap(sheet, headerRows);
-  const probes = {
-    descriptor: ['tag', 'tag number'],
-    model_number: ['model number'],
-    brand: ['brand'],
-    qty: ['qty', 'quantity'],
-    voltage: ['electrical voltage', 'voltage', 'volt ph'],
-    mca: ['electrical mca', 'mca'],
-    weight_lbs: ['operating weight lbs', 'weight lbs', 'weight', 'oper weight', 'wt lbs'],
-  };
-  let score = 0;
-  for (const aliases of Object.values(probes)) {
-    if (findColumnByAliases(rawHeaderMap, aliases)) score++;
+// Template fingerprints + fixed column maps for known workbook formats.
+// Column numbers are 1-based. Add new templates here as new formats arrive.
+const TEMPLATE_DEFINITIONS = [
+  {
+    id: 'DS_COMMERCIAL_V1',
+    description: 'DS Commercial export template (~28 cols)',
+    // Each fingerprint entry must match for the template to be selected.
+    fingerprint: [
+      { col: 2,  row: 1, contains: 'IDENTIFICATION' },
+      { col: 18, row: 2, contains: 'SENSIBLE' },
+      { col: 19, row: 2, contains: 'TOTAL' },
+      { col: 23, row: 2, contains: 'INPUT' },
+      { col: 25, row: 2, contains: 'VOLT' },
+    ],
+    firstDataRow: 4,
+    columns: {
+      descriptor:            2,
+      model_number:          5,
+      brand:                 4,
+      qty:                   12,
+      airflow_cfm:           10,
+      supply_fan_esp_in_wg:  11,
+      supply_fan_hp:         14,
+      supply_fan_rpm:        15,
+      cooling_sensible_mbh:  18,
+      cooling_total_mbh:     19,
+      heating_cfm:           20,
+      // INPUT CAPACITY col handles gas MBH, electric kW, and HP MBH —
+      // deriveHeatFields disambiguates by the actual values present
+      gas_heat_input_mbh:    23,
+      electric_heat_kw:      23,
+      heatpump_capacity_mbh: 23,
+      gas_heat_output_mbh:   24,
+      unit_eer:              8,
+      seer_ieer:             9,
+      voltage:               25,
+      mca:                   26,
+      mocp:                  27,
+      weight_lbs:            28,
+      remarks:               29,
+    },
+  },
+  {
+    id: 'DS_COMMERCIAL_FULL_V1',
+    description: 'DS Commercial full source template (~44 cols)',
+    fingerprint: [
+      { col: 2,  row: 1, contains: 'IDENTIFICATION' },
+      { col: 21, row: 2, contains: 'SENSIBLE' },
+      { col: 22, row: 2, contains: 'TOTAL' },
+      { col: 26, row: 2, contains: 'CAPACITY' },
+      { col: 39, row: 2, contains: 'VOLT' },
+    ],
+    firstDataRow: 4,
+    columns: {
+      descriptor:            2,
+      model_number:          5,
+      brand:                 4,
+      qty:                   15,
+      airflow_cfm:           10,
+      supply_fan_esp_in_wg:  13,
+      supply_fan_hp:         17,
+      supply_fan_rpm:        18,
+      cooling_sensible_mbh:  21,
+      cooling_total_mbh:     22,
+      heating_cfm:           23,
+      gas_heat_input_mbh:    26,
+      electric_heat_kw:      26,
+      heatpump_capacity_mbh: 26,
+      gas_heat_output_mbh:   27,
+      unit_eer:              8,
+      seer_ieer:             9,
+      voltage:               39,
+      mca:                   40,
+      mocp:                  41,
+      weight_lbs:            43,
+      remarks:               44,
+    },
+  },
+];
+
+function detectTemplate(sheet) {
+  for (const tmpl of TEMPLATE_DEFINITIONS) {
+    const matches = tmpl.fingerprint.every(({ col, row, contains }) =>
+      xlsxCellValue(sheet, col, row).toUpperCase().includes(contains.toUpperCase())
+    );
+    if (matches) return tmpl;
   }
-  return { headerRows, rawHeaderMap, score };
+  return null;
 }
 
-function detectBestHeaderRows(sheet) {
+function buildColumnMap(sheet) {
+  const tmpl = detectTemplate(sheet);
+
+  if (tmpl) {
+    return {
+      columns: { ...tmpl.columns },
+      rawHeaderMap: { headerRows: [tmpl.firstDataRow - 1], byKey: {}, byCol: {} },
+      missing: [],
+      template_id: tmpl.id,
+      firstDataRow: tmpl.firstDataRow,
+    };
+  }
+
+  // ── Fallback: legacy dynamic alias detection for unrecognized formats ──────
+  const headerRows = detectBestHeaderRows_legacy(sheet);
+  const rawHeaderMap = buildRawHeaderMap(sheet, headerRows);
+  const fields = {
+    descriptor:            ['tag', 'tag number'],
+    model_number:          ['model number'],
+    brand:                 ['brand'],
+    qty:                   ['qty', 'quantity'],
+    airflow_cfm:           ['supply air blower airflow cfm', 'airflow cfm', 'supply cfm', 'cfm'],
+    supply_fan_hp:         ['supply air blower hp', 'blower hp', 'fan hp', 'hp ea'],
+    supply_fan_esp_in_wg:  ['supply air blower esp iwg', 'esp iwg', 'esp in wg', 'esp'],
+    supply_fan_rpm:        ['supply air blower blwr rpm', 'blwr rpm', 'blower rpm', 'rpm'],
+    cooling_total_mbh:     ['cooling coil total capacity mbh', 'cooling total mbh', 'total capacity mbh', 'total mbh', 'cooling total'],
+    cooling_sensible_mbh:  ['cooling coil sensible capacity mbh', 'cooling sensible mbh', 'sensible capacity mbh', 'sensible mbh'],
+    unit_eer:              ['cooling eer', 'unit eer', 'eer'],
+    seer_ieer:             ['cooling seer ieer', 'seer ieer', 'ieer', 'seer'],
+    gas_heat_input_mbh:    ['heating coil input capacity mbtuh', 'input capacity mbtuh', 'gas heat mbh', 'heating input mbh', 'gas input'],
+    gas_heat_output_mbh:   ['heating coil output capacity', 'output capacity', 'gas heat out', 'heating output mbh'],
+    electric_heat_kw:      ['electric heater kw', 'electric heat kw', 'electric kw', 'heater kw', 'elec kw'],
+    heatpump_capacity_mbh: ['heat pump ratings mbh', 'heat pump capacity mbh', 'heat pump mbh', 'hp mbh'],
+    voltage:               ['electrical voltage', 'voltage', 'volt ph', 'volt'],
+    mca:                   ['electrical mca', 'mca', 'min circuit amps'],
+    mocp:                  ['electrical max fuse', 'max fuse', 'mocp', 'max ocpd'],
+    weight_lbs:            ['operating weight lbs', 'weight lbs', 'weight', 'oper wt lbs', 'wt lbs'],
+    remarks:               ['remarks'],
+  };
+  const columns = {};
+  for (const [field, aliases] of Object.entries(fields)) {
+    columns[field] = findColumnByAliases(rawHeaderMap, aliases);
+  }
+  const required = ['descriptor', 'model_number', 'brand', 'qty', 'voltage', 'mca'];
+  const missing = required.filter((f) => !columns[f]);
+  return {
+    columns,
+    rawHeaderMap,
+    missing,
+    template_id: 'UNKNOWN_DYNAMIC_FALLBACK',
+    firstDataRow: Math.max(...headerRows) + 1,
+  };
+}
+
+// Renamed to avoid conflict — called only by fallback path above
+function detectBestHeaderRows_legacy(sheet) {
   const candidates = [
     [3, 4, 5], [4, 5, 6], [5, 6, 7], [6, 7, 8],
     [7, 8, 9], [8, 9, 10], [9, 10, 11], [10, 11, 12],
   ];
   let best = null;
   for (const headerRows of candidates) {
-    const attempt = scoreHeaderRows(sheet, headerRows);
-    if (!best || attempt.score > best.score) best = attempt;
+    const rawHeaderMap = buildRawHeaderMap(sheet, headerRows);
+    const probes = {
+      descriptor:   ['tag', 'tag number'],
+      model_number: ['model number'],
+      brand:        ['brand'],
+      qty:          ['qty', 'quantity'],
+      voltage:      ['electrical voltage', 'voltage', 'volt ph'],
+      mca:          ['electrical mca', 'mca'],
+      weight_lbs:   ['operating weight lbs', 'weight lbs', 'weight'],
+    };
+    let score = 0;
+    for (const aliases of Object.values(probes)) {
+      if (findColumnByAliases(rawHeaderMap, aliases)) score++;
+    }
+    if (!best || score > best.score) best = { headerRows, score };
     if (best.score === 7) break;
   }
   return best?.headerRows || [6, 7, 8];
 }
 
-function buildColumnMap(sheet) {
-  const headerRows = detectBestHeaderRows(sheet);
-  const rawHeaderMap = buildRawHeaderMap(sheet, headerRows);
-  const fields = {
-    descriptor: ['tag', 'tag number'],
-    model_number: ['model number'],
-    brand: ['brand'],
-    qty: ['qty', 'quantity'],
-    airflow_cfm: ['supply air blower airflow cfm', 'airflow cfm', 'cfm'],
-    supply_fan_hp: ['supply air blower hp', 'blower hp', 'fan hp'],
-    supply_fan_esp_in_wg: ['supply air blower esp iwg', 'esp iwg', 'esp in wg', 'esp'],
-    supply_fan_rpm: ['supply air blower blwr rpm', 'blwr rpm', 'blower rpm', 'rpm'],
-    cooling_total_mbh: ['cooling capacity mbh total', 'cooling capacity total', 'cooling total mbh', 'cooling total', 'total mbh', 'total capacity mbh', 'total capacity mbtuh'],
-    cooling_sensible_mbh: ['cooling capacity mbh sens', 'cooling capacity sens', 'cooling sensible mbh', 'cooling sensible', 'sensible mbh', 'sensible capacaity mbh', 'sensible capacity mbtuh'],
-    unit_eer: ['cooling eer', 'unit eer', 'eer'],
-    seer_ieer: ['cooling seer ieer', 'cooling seerieer', 'seer ieer', 'seer ieerr', 'ieer', 'seer'],
-    refrigerant: ['cooling refrigerant', 'cooling refrig', 'refrigerant', 'refrig'],
-    gas_heat_input_mbh: ['heating gas heat mbh', 'heating gas mbh', 'gas heat mbh', 'gas mbh', 'heating input mbh', 'gas input', 'input capacity mbtuh', 'input capacity'],
-    gas_heat_output_mbh: ['heating gas heat out', 'heating gas out', 'gas heat out', 'gas out', 'heating output mbh', 'gas output', 'output capacity'],
-    electric_heat_kw: ['electric heater kw', 'electric heat kw', 'electric kw', 'heater kw', 'elec heat kw', 'elec kw'],
-    heatpump_capacity_mbh: ['heat pump ratings mbh', 'heat pump capacity mbh', 'heat pump mbh', 'hp ratings mbh', 'hp capacity mbh', 'hp mbh', 'heatpump mbh'],
-    voltage: ['electrical voltage', 'elec voltage', 'voltage', 'volt ph', 'volt'],
-    mca: ['electrical mca', 'elec mca', 'mca', 'min circuit amps'],
-    mocp: ['electrical max fuse', 'elec max fuse', 'max fuse', 'mocp', 'max ocpd', 'fuse'],
-    // FIX: weight_lbs removed from required[] — many workbooks label it differently or omit it
-    weight_lbs: ['electrical operating weight lbs', 'operating weight lbs', 'oper wt lbs', 'oper weight lbs', 'weight lbs', 'weight', 'operating wt'],
-    remarks: ['remarks'],
-  };
-  const columns = {};
-  for (const [field, aliases] of Object.entries(fields)) columns[field] = findColumnByAliases(rawHeaderMap, aliases);
-  // FIX: removed weight_lbs from required — it causes import failures on many real workbooks
-  const required = ['descriptor', 'model_number', 'brand', 'qty', 'voltage', 'mca'];
-  const missing = required.filter((f) => !columns[f]);
-  return { columns, rawHeaderMap, missing };
-}
 
 function getCell(sheet, columnMap, field, rowNumber) {
   const col = columnMap.columns[field];
@@ -524,7 +629,7 @@ async function stageDsCommercialWorkbook(env, payload) {
   const columnMap = buildColumnMap(sheet);
   if (columnMap.missing.length)
     throw new Error(`Could not identify required columns: ${columnMap.missing.join(', ')}`);
-  const firstDataRow = Math.max(...columnMap.rawHeaderMap.headerRows) + 1;
+  const firstDataRow = columnMap.firstDataRow;
   const totalRows = xlsxRowCount(sheet);
   const stagedRows = [];
   for (let rowNumber = firstDataRow; rowNumber <= totalRows; rowNumber++) {
@@ -566,7 +671,7 @@ async function stageDsCommercialWorkbook(env, payload) {
       raw_unit_eer: getCell(sheet, columnMap, 'unit_eer', rowNumber),
       raw_seer_ieer: getCell(sheet, columnMap, 'seer_ieer', rowNumber),
       raw_refrigerant: getCell(sheet, columnMap, 'refrigerant', rowNumber),
-      raw_heating_input_mbh:  hasMeaningfulValue(rawHpMbh) ? rawHpMbh : (rawGasInput || rawElecKw),
+      raw_heating_input_mbh: hasMeaningfulValue(rawHpMbh) ? rawHpMbh : (rawGasInput || rawElecKw),
       raw_heating_output_mbh: hasMeaningfulValue(rawHpMbh) ? '' : (rawGasOutput || rawGasInput),
       raw_voltage: rawVoltage,
       raw_mca: getCell(sheet, columnMap, 'mca', rowNumber),
@@ -976,7 +1081,7 @@ async function createWorkbook(env, units, batchId = null) {
     setCellValue(sheet, COL.heatingCfm, rowNum, r.heatingCfm);
     setCellValue(sheet, COL.heatingEat, rowNum, r.heatingEat);
     setCellValue(sheet, COL.heatingLat, rowNum, r.heatingLat);
-    setCellValue(sheet, COL.heatingInput, rowNum, r.heatingTotalCapacity || r.heatingInput);
+    setCellValue(sheet, COL.heatingInput, rowNum, r.heatingInput);
     setCellValue(sheet, COL.heatingOutput, rowNum, r.heatingOutput);
     setCellValue(sheet, COL.voltPh, rowNum, r.voltPh);
     setCellValue(sheet, COL.mca, rowNum, r.mca);
@@ -1061,7 +1166,38 @@ export default {
         });
       } catch (e) { return new Response(e.message || 'Export failed', { status: 500 }); }
     }
-
+    if (request.method === 'GET' && url.pathname === '/api/debug-template') {
+      try {
+        const filename = url.searchParams.get('file');
+        if (!filename) return json({ error: 'file param required — e.g. /api/debug-template?file=your-upload.xlsx' }, 400);
+        const obj = await env.TEMPLATES.get(filename);
+        if (!obj) return json({ error: `File not found in R2: ${filename}` }, 404);
+        const buf = await obj.arrayBuffer();
+        const wb = XLSX.read(buf, { type: 'array', cellText: true });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        const colMap = buildColumnMap(sheet);
+        // Dump first 5 rows so you can see what the fingerprint is checking
+        const cellPreview = [];
+        for (let row = 1; row <= 5; row++) {
+          const rowData = {};
+          for (let col = 1; col <= Math.min(xlsxColCount(sheet), 50); col++) {
+            const v = xlsxCellValue(sheet, col, row);
+            if (v) rowData[`C${col}`] = v;
+          }
+          cellPreview.push({ row, cells: rowData });
+        }
+        return json({
+          template_id: colMap.template_id,
+          columns: colMap.columns,
+          firstDataRow: colMap.firstDataRow,
+          missing: colMap.missing,
+          cell_preview: cellPreview,
+        });
+      } catch (e) {
+        return json({ error: e.message }, 500);
+      }
+    }
+    
     return env.ASSETS.fetch(request);
   },
 };
