@@ -124,6 +124,7 @@ export default function App() {
   const [isImportingSchedule, setIsImportingSchedule] = useState(false);
   const [importError, setImportError] = useState('');
   const [importResult, setImportResult] = useState(null);
+  const [activeBatchId, setActiveBatchId] = useState(null);
 
   const familyRule = FAMILY_RULES[selection.family];
 
@@ -174,7 +175,7 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             units: scheduledUnits,
-            batch_id: importResult?.batch?.id ?? null
+            batch_id: activeBatchId
           })
         });
 
@@ -204,7 +205,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [scheduledUnits, importResult?.batch?.id]);
+  }, [scheduledUnits, activeBatchId]);
 
   const selectedOptionLabels = optionSummary(selection);
   const selectionCode = useMemo(() => buildSelectionCode(selection), [selection]);
@@ -313,6 +314,7 @@ export default function App() {
       }
 
       setImportResult(importData);
+      setActiveBatchId(importData?.batch?.id ?? null);
     } catch (error) {
       setImportError(error.message || 'Unable to upload and import workbook.');
     } finally {
@@ -332,7 +334,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           units: scheduledUnits,
-          batch_id: importResult?.batch?.id ?? null
+          batch_id: activeBatchId
         })
       });
 

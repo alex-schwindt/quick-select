@@ -65,10 +65,14 @@ function normalizeHeatCapacity(value) {
 }
 
 function normalizeHeatCapacityKey(value) {
-  const numeric = normalizeNumericText(value);
-  if (numeric) return numeric;
-  const match = normalizeText(value).match(/([\d,.]+)/);
-  return match ? normalizeNumericText(match[1]) : '';
+  const text = normalizeText(value).replace(/,/g, '');
+  if (!text) return '';
+  const direct = Number(text);
+  if (Number.isFinite(direct)) return String(direct);
+  const match = text.match(/([\d,.]+)/);
+  if (!match) return '';
+  const extracted = Number(match[1].replace(/,/g, ''));
+  return Number.isFinite(extracted) ? String(extracted) : '';
 }
 
 function normalizeTonnage(value) {
@@ -756,17 +760,19 @@ async function listCatalog(env, filters) {
   return (await env.DB.prepare(sql).bind(...binds).all()).results;
 }
 
-async function findMatchingImportedRow(env, unit, batchId = null) {
-  const activeBatchId = await resolveActiveBatchId(env, batchId);
-  if (!activeBatchId) return null;
+async function findMatchingImportedRowInScope(env, unit, batchId = null) {
+  const batchClause = batchId ? 'batch_id=? AND ' : '';
+  const batchBind = batchId ? [batchId] : [];
 
   const requestedModel = normalizeText(unit.modelNumber ?? unit.selectedModelNumber ?? '');
   if (requestedModel) {
     const byModel = await env.DB.prepare(
       `SELECT * FROM staging_schedule_rows
-       WHERE batch_id=? AND raw_model_number=? AND parse_status='parsed'
+       WHERE ${batchClause}raw_model_number=? AND parse_status='parsed'
        ORDER BY id DESC LIMIT 1`
-    ).bind(activeBatchId, requestedModel).first();
+    )
+      .bind(...batchBind, requestedModel)
+      .first();
     if (byModel) return byModel;
   }
 
@@ -775,52 +781,68 @@ async function findMatchingImportedRow(env, unit, batchId = null) {
   const voltage = normalizeVoltage(unit.voltage);
   const heatType = normalizeHeatType(unit.heatType);
   const heatCapKey = heatType === 'None' ? '' : normalizeHeatCapacityKey(unit.heatCapacity);
+  const voltageClause = `(voltage_label=? OR TRIM(COALESCE(voltage_label,''))='')`;
 
   const exact = await env.DB.prepare(
     `SELECT * FROM staging_schedule_rows
-     WHERE batch_id=?
-       AND family_label=?
+     WHERE ${batchClause}family_label=?
        AND tonnage_value=CAST(? AS REAL)
-       AND voltage_label=?
+       AND ${voltageClause}
        AND aux_heat_type_label=?
        AND aux_heat_capacity_key=?
        AND parse_status='parsed'
      ORDER BY id DESC LIMIT 1`
-  ).bind(activeBatchId, family, tonnage, voltage, heatType, heatCapKey).first();
+  )
+    .bind(...batchBind, family, tonnage, voltage, heatType, heatCapKey)
+    .first();
   if (exact) return exact;
 
   const byHeatType = await env.DB.prepare(
     `SELECT * FROM staging_schedule_rows
-     WHERE batch_id=?
-       AND family_label=?
+     WHERE ${batchClause}family_label=?
        AND tonnage_value=CAST(? AS REAL)
-       AND voltage_label=?
+       AND ${voltageClause}
        AND aux_heat_type_label=?
        AND parse_status='parsed'
      ORDER BY id DESC LIMIT 1`
-  ).bind(activeBatchId, family, tonnage, voltage, heatType).first();
+  )
+    .bind(...batchBind, family, tonnage, voltage, heatType)
+    .first();
   if (byHeatType) return byHeatType;
 
   const relaxed = await env.DB.prepare(
     `SELECT * FROM staging_schedule_rows
-     WHERE batch_id=?
-       AND family_label=?
+     WHERE ${batchClause}family_label=?
        AND tonnage_value=CAST(? AS REAL)
-       AND voltage_label=?
+       AND ${voltageClause}
        AND parse_status='parsed'
      ORDER BY id DESC LIMIT 1`
-  ).bind(activeBatchId, family, tonnage, voltage).first();
+  )
+    .bind(...batchBind, family, tonnage, voltage)
+    .first();
   if (relaxed) return relaxed;
 
   const byFamilyTonnage = await env.DB.prepare(
     `SELECT * FROM staging_schedule_rows
-     WHERE batch_id=?
-       AND family_label=?
+     WHERE ${batchClause}family_label=?
        AND tonnage_value=CAST(? AS REAL)
        AND parse_status='parsed'
      ORDER BY id DESC LIMIT 1`
-  ).bind(activeBatchId, family, tonnage).first();
+  )
+    .bind(...batchBind, family, tonnage)
+    .first();
   return byFamilyTonnage ?? null;
+}
+
+async function findMatchingImportedRow(env, unit, batchId = null) {
+  const preferredBatchId = await resolveActiveBatchId(env, batchId);
+  const scopes = preferredBatchId ? [preferredBatchId, null] : [null];
+
+  for (const scopeBatchId of scopes) {
+    const match = await findMatchingImportedRowInScope(env, unit, scopeBatchId);
+    if (match) return match;
+  }
+  return null;
 }
 
 function buildResolvedScheduleRow(unit, match, index = 0) {
