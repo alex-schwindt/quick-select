@@ -236,7 +236,7 @@ function scoreHeaderRows(sheet, headerRows) {
     qty: ['qty', 'quantity'],
     voltage: ['electrical voltage', 'voltage', 'volt ph'],
     mca: ['electrical mca', 'mca'],
-    weight_lbs: ['operating weight lbs', 'weight lbs', 'weight'],
+    weight_lbs: ['operating weight lbs', 'weight lbs', 'weight', 'oper weight', 'wt lbs'],
   };
   let score = 0;
   for (const aliases of Object.values(probes)) {
@@ -271,8 +271,8 @@ function buildColumnMap(sheet) {
     supply_fan_hp: ['supply air blower hp', 'blower hp', 'fan hp'],
     supply_fan_esp_in_wg: ['supply air blower esp iwg', 'esp iwg', 'esp in wg', 'esp'],
     supply_fan_rpm: ['supply air blower blwr rpm', 'blwr rpm', 'blower rpm', 'rpm'],
-    cooling_total_mbh: ['cooling capacity mbh total', 'cooling capacity total', 'cooling total mbh', 'cooling total', 'total mbh'],
-    cooling_sensible_mbh: ['cooling capacity mbh sens', 'cooling capacity sens', 'cooling sensible mbh', 'cooling sensible', 'sensible mbh'],
+    cooling_total_mbh: ['cooling capacity mbh total', 'cooling capacity total', 'cooling total mbh', 'cooling total', 'total mbh', 'total capacity mbh', 'total capacity mbtuh'],
+    cooling_sensible_mbh: ['cooling capacity mbh sens', 'cooling capacity sens', 'cooling sensible mbh', 'cooling sensible', 'sensible mbh', 'sensible capacaity mbh', 'sensible capacity mbtuh'],
     unit_eer: ['cooling eer', 'unit eer', 'eer'],
     seer_ieer: ['cooling seer ieer', 'cooling seerieer', 'seer ieer', 'seer ieerr', 'ieer', 'seer'],
     refrigerant: ['cooling refrigerant', 'cooling refrig', 'refrigerant', 'refrig'],
@@ -566,8 +566,8 @@ async function stageDsCommercialWorkbook(env, payload) {
       raw_unit_eer: getCell(sheet, columnMap, 'unit_eer', rowNumber),
       raw_seer_ieer: getCell(sheet, columnMap, 'seer_ieer', rowNumber),
       raw_refrigerant: getCell(sheet, columnMap, 'refrigerant', rowNumber),
-      raw_heating_input_mbh: rawGasInput || rawElecKw,
-      raw_heating_output_mbh: rawHpMbh || rawGasOutput,
+      raw_heating_input_mbh:  hasMeaningfulValue(rawHpMbh) ? rawHpMbh : (rawGasInput || rawElecKw),
+      raw_heating_output_mbh: hasMeaningfulValue(rawHpMbh) ? '' : (rawGasOutput || rawGasInput),
       raw_voltage: rawVoltage,
       raw_mca: getCell(sheet, columnMap, 'mca', rowNumber),
       raw_mocp: getCell(sheet, columnMap, 'mocp', rowNumber),
@@ -849,10 +849,10 @@ function buildResolvedScheduleRow(unit, match, index = 0) {
   const unitType = asBlank(match?.family_label ?? unit.family);
   const isHP = normalizeFamily(unitType) === 'Heat Pump';
 
-  const tonnageFromDb =
-    match != null && match.tonnage_value != null && match.tonnage_value !== ''
-      ? match.tonnage_value
-      : null;
+  const tonnageFromDb = match !== null && match.tonnage_value != null && Number(match.tonnage_value) > 0
+  ? match.tonnage_value
+  : null;
+  
 
   // FIX: for non-HP units, prefer imported heating input over UI heatCapacity field
   const importedHeatingInput = asBlank(match?.raw_heating_input_mbh);
