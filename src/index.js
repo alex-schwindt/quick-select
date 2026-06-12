@@ -231,6 +231,40 @@ function findColumnByAliases(rawHeaderMap, aliases) {
 // Column numbers are 1-based. Add new templates here as new formats arrive.
 const TEMPLATE_DEFINITIONS = [
   {
+    id: 'DS_COMMERCIAL_SOURCE_WIDE',
+    description: 'DS Commercial source schedule (~60 cols, data row 7)',
+    fingerprint: [
+      { col: 1, row: 1, contains: 'DS Commercial Schedule' },
+      { col: 5, row: 5, contains: 'Supply Air Blower' },
+      { col: 14, row: 5, contains: 'Cooling' },
+      { col: 34, row: 5, contains: 'Heating' },
+    ],
+    firstDataRow: 7,
+    columns: {
+      descriptor:            1,
+      model_number:          2,
+      brand:                 3,
+      qty:                   4,
+      airflow_cfm:           5,
+      supply_fan_esp_in_wg:  8,
+      supply_fan_hp:         7,
+      supply_fan_rpm:        9,
+      cooling_sensible_mbh:  16,   // Cooling section C14 + 2
+      cooling_total_mbh:     17,   // Cooling section C14 + 3
+      unit_eer:              22,
+      seer_ieer:             23,
+      gas_heat_input_mbh:    37,   // Heating section C34 + 3
+      electric_heat_kw:      37,
+      heatpump_capacity_mbh: 37,
+      gas_heat_output_mbh:   38,   // Heating section C34 + 4
+      voltage:               55,
+      mca:                   56,
+      mocp:                  58,
+      weight_lbs:            60,   // Near end of row, after electrical
+      remarks:               61,
+    },
+  },
+  {
     id: 'DS_COMMERCIAL_V1',
     description: 'DS Commercial export template (~28 cols)',
     // Each fingerprint entry must match for the template to be selected.
