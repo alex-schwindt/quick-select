@@ -301,11 +301,11 @@ function updateSheetRange(ws, maxCol, maxRow) {
 }
 
 async function loadTemplateWorkbook(env) {
-  let object = await env.TEMPLATES.get('SSR-Schedule-Example-June.xlsx');
+  let object = await env.TEMPLATES.get('SSR-Schedule-Example June.xlsx');
   if (object) return { workbook: XLSX.read(await object.arrayBuffer(), { type: 'array', cellStyles: true, cellNF: true, cellDates: true }), flavor: 'june' };
   object = await env.TEMPLATES.get('SSR-Schedule-Example.xlsx');
   if (object) return { workbook: XLSX.read(await object.arrayBuffer(), { type: 'array', cellStyles: true, cellNF: true, cellDates: true }), flavor: 'legacy' };
-  throw new Error('No export template found in R2. Upload SSR-Schedule-Example-June.xlsx or SSR-Schedule-Example.xlsx.');
+  throw new Error('No export template found in R2. Upload SSR-Schedule-Example June.xlsx or SSR-Schedule-Example.xlsx.');
 }
 
 function writeJuneRow(ws, rowNumber, row) {
