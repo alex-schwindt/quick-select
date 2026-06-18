@@ -180,7 +180,6 @@ async function handleAdminImportCatalog(request, env) {
       issues.push(`${row.model_number}: ${error.message}`);
     }
   }
-
   return json({ ok: true, rows_read: rowsRead, inserted, updated, issues });
 }
 
@@ -242,11 +241,7 @@ function previewFallback(unit) {
     filterType: '—',
     weight: '—',
     remarks: optionSummary(unit),
-    matchFound: false,
-    cutsheetUrl: '',
-    accessoriesUrl: '',
-    wiringUrl: '',
-    iomUrl: ''
+    matchFound: false
   };
 }
 
@@ -280,11 +275,7 @@ function buildPreviewRow(unit, match) {
     filterType: '—',
     weight: asBlank(match.weight) || '—',
     remarks: optionSummary(unit) || '—',
-    matchFound: true,
-    cutsheetUrl: match.cutsheet_url || '',
-    accessoriesUrl: match.accessories_url || '',
-    wiringUrl: match.wiring_url || '',
-    iomUrl: match.iom_url || ''
+    matchFound: true
   };
 }
 
@@ -310,50 +301,56 @@ function updateSheetRange(ws, maxCol, maxRow) {
 }
 
 async function loadTemplateWorkbook(env) {
-  const object = await env.TEMPLATES.get('SSR-Schedule-Example-June.xlsx');
-  if (!object) throw new Error('June template workbook not found in R2 bucket.');
-  const buffer = await object.arrayBuffer();
-  return XLSX.read(buffer, { type: 'array', cellStyles: true, cellNF: true, cellDates: true });
+  let object = await env.TEMPLATES.get('SSR-Schedule-Example-June.xlsx');
+  if (object) return { workbook: XLSX.read(await object.arrayBuffer(), { type: 'array', cellStyles: true, cellNF: true, cellDates: true }), flavor: 'june' };
+  object = await env.TEMPLATES.get('SSR-Schedule-Example.xlsx');
+  if (object) return { workbook: XLSX.read(await object.arrayBuffer(), { type: 'array', cellStyles: true, cellNF: true, cellDates: true }), flavor: 'legacy' };
+  throw new Error('No export template found in R2. Upload SSR-Schedule-Example-June.xlsx or SSR-Schedule-Example.xlsx.');
+}
+
+function writeJuneRow(ws, rowNumber, row) {
+  setCell(ws, 1, rowNumber, row.tag);
+  setCell(ws, 2, rowNumber, row.areaServed === '—' ? '' : row.areaServed);
+  setCell(ws, 3, rowNumber, row.manufacturer);
+  setCell(ws, 4, rowNumber, row.modelNumber);
+  setCell(ws, 5, rowNumber, Number(row.nominalTons));
+  setCell(ws, 6, rowNumber, row.unitType);
+  setCell(ws, 7, rowNumber, row.unitEer === '—' ? '' : row.unitEer);
+  setCell(ws, 8, rowNumber, row.seerIeerr === '—' ? '' : row.seerIeerr);
+  setCell(ws, 9, rowNumber, row.supplyCfm === '—' ? '' : Number(row.supplyCfm));
+  setCell(ws, 10, rowNumber, row.supplyEsp === '—' ? '' : row.supplyEsp);
+  setCell(ws, 11, rowNumber, row.supplyBhp === '—' ? '' : row.supplyBhp);
+  setCell(ws, 12, rowNumber, row.supplyHp === '—' ? '' : row.supplyHp);
+  setCell(ws, 13, rowNumber, row.supplyRpm === '—' ? '' : row.supplyRpm);
+  setCell(ws, 14, rowNumber, row.coolingEat === '—' ? '' : row.coolingEat);
+  setCell(ws, 15, rowNumber, row.coolingLat === '—' ? '' : row.coolingLat);
+  setCell(ws, 16, rowNumber, row.coolingSensible === '—' ? '' : row.coolingSensible);
+  setCell(ws, 17, rowNumber, row.coolingTotal === '—' ? '' : row.coolingTotal);
+  setCell(ws, 18, rowNumber, row.heatingEat === '—' ? '' : row.heatingEat);
+  setCell(ws, 19, rowNumber, row.heatingLat === '—' ? '' : row.heatingLat);
+  setCell(ws, 20, rowNumber, row.heatingTotalCapacity === '—' ? '' : row.heatingTotalCapacity);
+  setCell(ws, 21, rowNumber, row.heatingInput === 'No heat' ? '' : row.heatingInput);
+  setCell(ws, 22, rowNumber, row.voltPh);
+  setCell(ws, 23, rowNumber, row.mca === '—' ? '' : row.mca);
+  setCell(ws, 24, rowNumber, row.mocp === '—' ? '' : row.mocp);
+  setCell(ws, 25, rowNumber, row.filterType === '—' ? '' : row.filterType);
+  setCell(ws, 26, rowNumber, row.weight === '—' ? '' : Number(row.weight));
+  setCell(ws, 27, rowNumber, row.remarks === '—' ? '' : row.remarks);
 }
 
 async function createWorkbook(env, units) {
-  const wb = await loadTemplateWorkbook(env);
+  const loaded = await loadTemplateWorkbook(env);
+  const wb = loaded.workbook;
   const sheetName = wb.SheetNames.includes('Table 1') ? 'Table 1' : wb.SheetNames[0];
   const ws = wb.Sheets[sheetName];
   if (!ws) throw new Error('Template worksheet not found.');
 
-  let currentRow = 3;
+  const startRow = loaded.flavor === 'june' ? 3 : 4;
+  let currentRow = startRow;
+
   for (const unit of units) {
     const row = buildPreviewRow(unit, await findMatchingImportedRow(env, unit));
-
-    setCell(ws, 1, currentRow, row.tag);
-    setCell(ws, 2, currentRow, row.areaServed === '—' ? '' : row.areaServed);
-    setCell(ws, 3, currentRow, row.manufacturer);
-    setCell(ws, 4, currentRow, row.modelNumber);
-    setCell(ws, 5, currentRow, Number(row.nominalTons));
-    setCell(ws, 6, currentRow, row.unitType);
-    setCell(ws, 7, currentRow, row.unitEer === '—' ? '' : row.unitEer);
-    setCell(ws, 8, currentRow, row.seerIeerr === '—' ? '' : row.seerIeerr);
-    setCell(ws, 9, currentRow, row.supplyCfm === '—' ? '' : Number(row.supplyCfm));
-    setCell(ws, 10, currentRow, row.supplyEsp === '—' ? '' : row.supplyEsp);
-    setCell(ws, 11, currentRow, row.supplyBhp === '—' ? '' : row.supplyBhp);
-    setCell(ws, 12, currentRow, row.supplyHp === '—' ? '' : row.supplyHp);
-    setCell(ws, 13, currentRow, row.supplyRpm === '—' ? '' : row.supplyRpm);
-    setCell(ws, 14, currentRow, row.coolingEat === '—' ? '' : row.coolingEat);
-    setCell(ws, 15, currentRow, row.coolingLat === '—' ? '' : row.coolingLat);
-    setCell(ws, 16, currentRow, row.coolingSensible === '—' ? '' : row.coolingSensible);
-    setCell(ws, 17, currentRow, row.coolingTotal === '—' ? '' : row.coolingTotal);
-    setCell(ws, 18, currentRow, row.heatingEat === '—' ? '' : row.heatingEat);
-    setCell(ws, 19, currentRow, row.heatingLat === '—' ? '' : row.heatingLat);
-    setCell(ws, 20, currentRow, row.heatingTotalCapacity === '—' ? '' : row.heatingTotalCapacity);
-    setCell(ws, 21, currentRow, row.heatingInput === 'No heat' ? '' : row.heatingInput);
-    setCell(ws, 22, currentRow, row.voltPh);
-    setCell(ws, 23, currentRow, row.mca === '—' ? '' : row.mca);
-    setCell(ws, 24, currentRow, row.mocp === '—' ? '' : row.mocp);
-    setCell(ws, 25, currentRow, row.filterType === '—' ? '' : row.filterType);
-    setCell(ws, 26, currentRow, row.weight === '—' ? '' : Number(row.weight));
-    setCell(ws, 27, currentRow, row.remarks === '—' ? '' : row.remarks);
-
+    writeJuneRow(ws, currentRow, row);
     currentRow += 1;
   }
 
@@ -394,7 +391,7 @@ export default {
           }
         });
       } catch (error) {
-        return new Response(error.message || 'Export failed', { status: 500 });
+        return json({ error: error.message || 'Export failed' }, 500);
       }
     }
 
