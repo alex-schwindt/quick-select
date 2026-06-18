@@ -125,7 +125,8 @@ function csvRowToModel(rec) {
     electric_heat_capacity: cleanBlank(rec.Electric_Heat_Capacity),
     voltage: normalizeVoltage(rec.Voltage || rec.voltage),
     mca: cleanBlank(rec.MCA || rec.mca),
-    mocp: cleanBlank(rec.MOCP || rec.mocp)
+    mocp: cleanBlank(rec.MOCP || rec.mocp),
+    weight: numberOrNull(rec.Weight || rec.weight)
   };
 }
 
@@ -135,7 +136,7 @@ async function upsertCatalogRow(env, row) {
     .first();
 
   if (existing?.id) {
-    await env.DB.prepare(`UPDATE unit_models SET manufacturer = ?, unit_type = ?, nominal_tonnage = ?, cfm = ?, hp = ?, esp = ?, rpm = ?, cooling_eat_db = ?, cooling_eat_wb = ?, cooling_lat_db = ?, cooling_lat_wb = ?, cooling_total_capacity = ?, cooling_sensible_capacity = ?, eer = ?, seer_ieer = ?, heating_eat = ?, heating_lat = ?, heating_capacity = ?, heating_gas_input = ?, heatpump_total_capacity = ?, heat_pump_hspf = ?, electric_heat_capacity = ?, voltage = ?, mca = ?, mocp = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+    await env.DB.prepare(`UPDATE unit_models SET manufacturer = ?, unit_type = ?, nominal_tonnage = ?, cfm = ?, hp = ?, esp = ?, rpm = ?, cooling_eat_db = ?, cooling_eat_wb = ?, cooling_lat_db = ?, cooling_lat_wb = ?, cooling_total_capacity = ?, cooling_sensible_capacity = ?, eer = ?, seer_ieer = ?, heating_eat = ?, heating_lat = ?, heating_capacity = ?, heating_gas_input = ?, heatpump_total_capacity = ?, heat_pump_hspf = ?, electric_heat_capacity = ?, voltage = ?, mca = ?, mocp = ?, weight = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
       .bind(
         row.manufacturer,
         row.unit_type,
@@ -162,6 +163,7 @@ async function upsertCatalogRow(env, row) {
         row.voltage,
         row.mca,
         row.mocp,
+        row.weight,
         existing.id
       )
       .run();
@@ -169,7 +171,7 @@ async function upsertCatalogRow(env, row) {
     return 'updated';
   }
 
-  const insert = await env.DB.prepare(`INSERT INTO unit_models (model_number, manufacturer, unit_type, nominal_tonnage, cfm, hp, esp, rpm, cooling_eat_db, cooling_eat_wb, cooling_lat_db, cooling_lat_wb, cooling_total_capacity, cooling_sensible_capacity, eer, seer_ieer, heating_eat, heating_lat, heating_capacity, heating_gas_input, heatpump_total_capacity, heat_pump_hspf, electric_heat_capacity, voltage, mca, mocp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  const insert = await env.DB.prepare(`INSERT INTO unit_models (model_number, manufacturer, unit_type, nominal_tonnage, cfm, hp, esp, rpm, cooling_eat_db, cooling_eat_wb, cooling_lat_db, cooling_lat_wb, cooling_total_capacity, cooling_sensible_capacity, eer, seer_ieer, heating_eat, heating_lat, heating_capacity, heating_gas_input, heatpump_total_capacity, heat_pump_hspf, electric_heat_capacity, voltage, mca, mocp, weight) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(
       row.model_number,
       row.manufacturer,
@@ -196,7 +198,8 @@ async function upsertCatalogRow(env, row) {
       row.electric_heat_capacity,
       row.voltage,
       row.mca,
-      row.mocp
+      row.mocp,
+      row.weight
     )
     .run();
 
@@ -351,7 +354,7 @@ function buildPreviewRow(unit, match) {
     mca: asBlank(match.mca) || '—',
     mocp: asBlank(match.mocp) || '—',
     filterType: '—',
-    weight: '—',
+    weight: asBlank(match.weight) || '—',
     remarks: optionSummary(unit) || '—',
     matchFound: true,
     cutsheetUrl: match.cutsheet_url || '',
@@ -428,7 +431,7 @@ async function createWorkbook(env, units) {
     setCell(ws, 24, currentRow, row.mca === '—' ? '' : row.mca);
     setCell(ws, 25, currentRow, row.mocp === '—' ? '' : row.mocp);
     setCell(ws, 26, currentRow, row.filterType === '—' ? '' : row.filterType);
-    setCell(ws, 27, currentRow, row.weight === '—' ? '' : row.weight);
+    setCell(ws, 27, currentRow, row.weight === '—' ? '' : Number(row.weight));
     setCell(ws, 28, currentRow, row.remarks === '—' ? '' : row.remarks);
 
     currentRow += 1;
