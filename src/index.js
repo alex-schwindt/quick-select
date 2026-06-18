@@ -186,7 +186,6 @@ function inferCatalogRowFromTypicalLayout(row, descriptorCol, modelCol, voltageC
   const isHeatPump = /\bheat pump\b|\bhp\b/i.test(descriptor);
   const isGas = /\bgas\b/i.test(descriptor);
   const isElectric = /\belectric\b/i.test(descriptor);
-  const isHighHeat = /high heat/i.test(descriptor);
   const voltage = inferVoltageFromRow(row, voltageCol) || normalizeVoltage(descriptor);
   const tonnageValue = tonnageMatch ? Number(tonnageMatch[1]) : null;
   if (!tonnageValue) return null;
@@ -194,8 +193,7 @@ function inferCatalogRowFromTypicalLayout(row, descriptorCol, modelCol, voltageC
   let family = 'AC';
   if (isHeatPump) family = 'Heat Pump';
 
-  let efficiency = 'Standard';
-  if (isHighHeat) efficiency = 'High';
+  const efficiency = 'Standard';
 
   let heatType = 'None';
   let heatCapacity = '';
@@ -451,13 +449,25 @@ function previewFallback(unit) {
     modelNumber: buildSelectionCode(unit),
     nominalTons: unit.tonnage,
     unitType: unit.family,
+    unitEer: '—',
+    seerIeerr: '—',
     supplyCfm: '—',
+    supplyEsp: '—',
+    supplyBhp: '—',
+    supplyHp: '—',
+    supplyRpm: '—',
+    coolingEat: '—',
+    coolingLat: '—',
+    coolingSensible: '—',
     coolingTotal: '—',
+    heatingEat: '—',
+    heatingLat: '—',
     heatingTotalCapacity: '—',
     heatingInput: unit.heatType === 'None' ? 'No heat' : `${unit.heatType} ${unit.heatCapacity}`,
     voltPh: unit.voltage,
     mca: '—',
     mocp: '—',
+    filterType: '—',
     weight: '—',
     remarks: optionSummary(unit),
     matchFound: false,
@@ -477,13 +487,25 @@ function buildPreviewRow(unit, match) {
     modelNumber: match.model_number || buildSelectionCode(unit),
     nominalTons: unit.tonnage,
     unitType: match.unit_type || unit.family,
+    unitEer: asBlank(match.unit_eer) || '—',
+    seerIeerr: asBlank(match.seer_ieer) || '—',
     supplyCfm: asBlank(match.cooling_cfm) || '—',
+    supplyEsp: asBlank(match.supply_fan_esp_in_wg) || '—',
+    supplyBhp: asBlank(match.supply_fan_bhp) || '—',
+    supplyHp: asBlank(match.supply_fan_hp) || '—',
+    supplyRpm: asBlank(match.supply_fan_rpm) || '—',
+    coolingEat: asBlank(match.cooling_eat_db_wb) || '—',
+    coolingLat: asBlank(match.cooling_lat_db_wb) || '—',
+    coolingSensible: asBlank(match.cooling_sensible_capacity_mbh) || '—',
     coolingTotal: asBlank(match.cooling_total_capacity_mbh) || '—',
+    heatingEat: asBlank(match.heating_eat_f) || '—',
+    heatingLat: asBlank(match.heating_lat_f) || '—',
     heatingTotalCapacity: asBlank(match.heating_capacity_mbtu) || '—',
     heatingInput: unit.heatType === 'None' ? 'No heat' : `${unit.heatType} ${unit.heatCapacity}`,
     voltPh: match.voltage || unit.voltage,
     mca: asBlank(match.mca) || '—',
     mocp: asBlank(match.mocp) || '—',
+    filterType: asBlank(match.filter_type) || '—',
     weight: asBlank(match.operating_weight_lbs) || '—',
     remarks: optionSummary(unit, match) || '—',
     matchFound: true,
@@ -505,33 +527,74 @@ async function handlePreviewSchedule(request, env) {
   return json({ ok: true, rows });
 }
 
+function setCell(ws, col, row, value) {
+  const addr = XLSX.utils.encode_cell({ c: col - 1, r: row - 1 });
+  if (value === undefined || value === null || value === '') {
+    if (ws[addr]) delete ws[addr];
+    return;
+  }
+  ws[addr] = { t: typeof value === 'number' ? 'n' : 's', v: value };
+}
+
+function updateSheetRange(ws, maxCol, maxRow) {
+  ws['!ref'] = XLSX.utils.encode_range({ s: { c: 0, r: 0 }, e: { c: maxCol - 1, r: maxRow - 1 } });
+}
+
+async function loadTemplateWorkbook(env) {
+  const object = await env.TEMPLATES.get('SSR-Schedule-Example.xlsx');
+  if (!object) throw new Error('Template workbook not found in R2 bucket.');
+  const buffer = await object.arrayBuffer();
+  return XLSX.read(buffer, { type: 'array', cellStyles: true, cellNF: true, cellDates: true });
+}
+
 async function createWorkbook(env, units) {
-  const rows = [];
+  const wb = await loadTemplateWorkbook(env);
+  const sheetName = wb.SheetNames.includes('Table 1') ? 'Table 1' : wb.SheetNames[0];
+  const ws = wb.Sheets[sheetName];
+  if (!ws) throw new Error('Template worksheet not found.');
+
+  const templateRow = 4;
+  const startRow = 4;
+  let currentRow = startRow;
+
   for (const unit of units) {
     const match = await findMatchingImportedRow(env, unit);
     const row = buildPreviewRow(unit, match);
-    rows.push({
-      Tag: row.tag,
-      'Area Served': row.areaServed,
-      Family: unit.family,
-      'Model Number': row.modelNumber,
-      Tons: row.nominalTons,
-      'Unit Type': row.unitType,
-      'Volt/Ph': row.voltPh,
-      'Supply Fan CFM': row.supplyCfm,
-      'Cooling Total': row.coolingTotal,
-      'Heating Total Capacity': row.heatingTotalCapacity,
-      'Heating Input': row.heatingInput,
-      MCA: row.mca,
-      MOCP: row.mocp,
-      Weight: row.weight,
-      Remarks: row.remarks
-    });
+
+    setCell(ws, 2, currentRow, row.tag);
+    setCell(ws, 3, currentRow, row.areaServed === '—' ? '' : row.areaServed);
+    setCell(ws, 4, currentRow, row.manufacturer);
+    setCell(ws, 5, currentRow, row.modelNumber);
+    setCell(ws, 6, currentRow, Number(row.nominalTons));
+    setCell(ws, 7, currentRow, row.unitType);
+    setCell(ws, 8, currentRow, row.unitEer === '—' ? '' : row.unitEer);
+    setCell(ws, 9, currentRow, row.seerIeerr === '—' ? '' : row.seerIeerr);
+    setCell(ws, 10, currentRow, row.supplyCfm === '—' ? '' : row.supplyCfm);
+    setCell(ws, 13, currentRow, row.supplyEsp === '—' ? '' : row.supplyEsp);
+    setCell(ws, 16, currentRow, row.supplyBhp === '—' ? '' : row.supplyBhp);
+    setCell(ws, 17, currentRow, row.supplyHp === '—' ? '' : row.supplyHp);
+    setCell(ws, 18, currentRow, row.supplyRpm === '—' ? '' : row.supplyRpm);
+    setCell(ws, 19, currentRow, row.coolingEat === '—' ? '' : row.coolingEat);
+    setCell(ws, 20, currentRow, row.coolingLat === '—' ? '' : row.coolingLat);
+    setCell(ws, 21, currentRow, row.coolingSensible === '—' ? '' : row.coolingSensible);
+    setCell(ws, 22, currentRow, row.coolingTotal === '—' ? '' : row.coolingTotal);
+    setCell(ws, 24, currentRow, row.heatingEat === '—' ? '' : row.heatingEat);
+    setCell(ws, 25, currentRow, row.heatingLat === '—' ? '' : row.heatingLat);
+    setCell(ws, 26, currentRow, row.heatingTotalCapacity === '—' ? '' : row.heatingTotalCapacity);
+    setCell(ws, 27, currentRow, row.heatingInput === 'No heat' ? '' : row.heatingInput);
+    setCell(ws, 39, currentRow, row.voltPh);
+    setCell(ws, 40, currentRow, row.mca === '—' ? '' : row.mca);
+    setCell(ws, 41, currentRow, row.mocp === '—' ? '' : row.mocp);
+    setCell(ws, 42, currentRow, row.filterType === '—' ? '' : row.filterType);
+    setCell(ws, 43, currentRow, row.weight === '—' ? '' : row.weight);
+    setCell(ws, 44, currentRow, row.remarks === '—' ? '' : row.remarks);
+
+    currentRow += 1;
   }
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.json_to_sheet(rows);
-  XLSX.utils.book_append_sheet(wb, ws, 'Schedule');
-  return XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+
+  const existingRange = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+  updateSheetRange(ws, Math.max(existingRange.e.c + 1, 44), Math.max(existingRange.e.r + 1, currentRow));
+  return XLSX.write(wb, { type: 'array', bookType: 'xlsx', cellStyles: true });
 }
 
 export default {
