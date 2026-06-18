@@ -131,78 +131,17 @@ function csvRowToModel(rec) {
 }
 
 async function upsertCatalogRow(env, row) {
-  const existing = await env.DB.prepare(`SELECT id FROM unit_models WHERE model_number = ? LIMIT 1`)
-    .bind(row.model_number)
-    .first();
-
+  const existing = await env.DB.prepare(`SELECT id FROM unit_models WHERE model_number = ? LIMIT 1`).bind(row.model_number).first();
   if (existing?.id) {
     await env.DB.prepare(`UPDATE unit_models SET manufacturer = ?, unit_type = ?, nominal_tonnage = ?, cfm = ?, hp = ?, esp = ?, rpm = ?, cooling_eat_db = ?, cooling_eat_wb = ?, cooling_lat_db = ?, cooling_lat_wb = ?, cooling_total_capacity = ?, cooling_sensible_capacity = ?, eer = ?, seer_ieer = ?, heating_eat = ?, heating_lat = ?, heating_capacity = ?, heating_gas_input = ?, heatpump_total_capacity = ?, heat_pump_hspf = ?, electric_heat_capacity = ?, voltage = ?, mca = ?, mocp = ?, weight = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-      .bind(
-        row.manufacturer,
-        row.unit_type,
-        row.nominal_tonnage,
-        row.cfm,
-        row.hp,
-        row.esp,
-        row.rpm,
-        row.cooling_eat_db,
-        row.cooling_eat_wb,
-        row.cooling_lat_db,
-        row.cooling_lat_wb,
-        row.cooling_total_capacity,
-        row.cooling_sensible_capacity,
-        row.eer,
-        row.seer_ieer,
-        row.heating_eat,
-        row.heating_lat,
-        row.heating_capacity,
-        row.heating_gas_input,
-        row.heatpump_total_capacity,
-        row.heat_pump_hspf,
-        row.electric_heat_capacity,
-        row.voltage,
-        row.mca,
-        row.mocp,
-        row.weight,
-        existing.id
-      )
+      .bind(row.manufacturer, row.unit_type, row.nominal_tonnage, row.cfm, row.hp, row.esp, row.rpm, row.cooling_eat_db, row.cooling_eat_wb, row.cooling_lat_db, row.cooling_lat_wb, row.cooling_total_capacity, row.cooling_sensible_capacity, row.eer, row.seer_ieer, row.heating_eat, row.heating_lat, row.heating_capacity, row.heating_gas_input, row.heatpump_total_capacity, row.heat_pump_hspf, row.electric_heat_capacity, row.voltage, row.mca, row.mocp, row.weight, existing.id)
       .run();
     await ensureDocuments(env, existing.id, row.model_number);
     return 'updated';
   }
-
   const insert = await env.DB.prepare(`INSERT INTO unit_models (model_number, manufacturer, unit_type, nominal_tonnage, cfm, hp, esp, rpm, cooling_eat_db, cooling_eat_wb, cooling_lat_db, cooling_lat_wb, cooling_total_capacity, cooling_sensible_capacity, eer, seer_ieer, heating_eat, heating_lat, heating_capacity, heating_gas_input, heatpump_total_capacity, heat_pump_hspf, electric_heat_capacity, voltage, mca, mocp, weight) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(
-      row.model_number,
-      row.manufacturer,
-      row.unit_type,
-      row.nominal_tonnage,
-      row.cfm,
-      row.hp,
-      row.esp,
-      row.rpm,
-      row.cooling_eat_db,
-      row.cooling_eat_wb,
-      row.cooling_lat_db,
-      row.cooling_lat_wb,
-      row.cooling_total_capacity,
-      row.cooling_sensible_capacity,
-      row.eer,
-      row.seer_ieer,
-      row.heating_eat,
-      row.heating_lat,
-      row.heating_capacity,
-      row.heating_gas_input,
-      row.heatpump_total_capacity,
-      row.heat_pump_hspf,
-      row.electric_heat_capacity,
-      row.voltage,
-      row.mca,
-      row.mocp,
-      row.weight
-    )
+    .bind(row.model_number, row.manufacturer, row.unit_type, row.nominal_tonnage, row.cfm, row.hp, row.esp, row.rpm, row.cooling_eat_db, row.cooling_eat_wb, row.cooling_lat_db, row.cooling_lat_wb, row.cooling_total_capacity, row.cooling_sensible_capacity, row.eer, row.seer_ieer, row.heating_eat, row.heating_lat, row.heating_capacity, row.heating_gas_input, row.heatpump_total_capacity, row.heat_pump_hspf, row.electric_heat_capacity, row.voltage, row.mca, row.mocp, row.weight)
     .run();
-
   const modelId = insert.meta?.last_row_id;
   if (modelId) await ensureDocuments(env, modelId, row.model_number);
   return 'inserted';
@@ -214,10 +153,8 @@ async function handleAdminImportCatalog(request, env) {
   const formData = await request.formData();
   const file = formData.get('file');
   if (!file || typeof file === 'string') return json({ error: 'Missing file field.' }, 400);
-
   const name = normalizeText(file.name).toLowerCase();
   if (!name.endsWith('.csv')) return json({ error: 'This fresh import path expects a CSV file.' }, 400);
-
   const text = await file.text();
   const wb = XLSX.read(text, { type: 'string' });
   const sheet = wb.Sheets[wb.SheetNames[0]];
@@ -231,18 +168,9 @@ async function handleAdminImportCatalog(request, env) {
   for (const rec of records) {
     const row = csvRowToModel(rec);
     if (!row) continue;
-    if (!row.unit_type) {
-      issues.push(`${row.model_number}: Unit_Type is required.`);
-      continue;
-    }
-    if (!Number.isFinite(row.nominal_tonnage)) {
-      issues.push(`${row.model_number}: Nominal_Tonnage is required.`);
-      continue;
-    }
-    if (!row.voltage) {
-      issues.push(`${row.model_number}: Voltage is required.`);
-      continue;
-    }
+    if (!row.unit_type) { issues.push(`${row.model_number}: Unit_Type is required.`); continue; }
+    if (!Number.isFinite(row.nominal_tonnage)) { issues.push(`${row.model_number}: Nominal_Tonnage is required.`); continue; }
+    if (!row.voltage) { issues.push(`${row.model_number}: Voltage is required.`); continue; }
     rowsRead += 1;
     try {
       const action = await upsertCatalogRow(env, row);
@@ -260,18 +188,28 @@ async function findMatchingImportedRow(env, unit) {
   const requestedType = normalizeUnitType(unit.family || unit.unitType);
   const requestedVoltage = normalizeVoltage(unit.voltage);
   const requestedTonnage = Number(unit.tonnage);
-
   const exact = await env.DB.prepare(`SELECT um.*, ud.cutsheet_url, ud.accessories_url, ud.wiring_url, ud.iom_url FROM unit_models um LEFT JOIN unit_documents ud ON ud.model_id = um.id WHERE um.unit_type = ? AND um.nominal_tonnage = ? AND um.voltage = ? ORDER BY um.id LIMIT 1`)
     .bind(requestedType, requestedTonnage, requestedVoltage)
     .first();
-
   if (exact) return exact;
-
   const relaxed = await env.DB.prepare(`SELECT um.*, ud.cutsheet_url, ud.accessories_url, ud.wiring_url, ud.iom_url FROM unit_models um LEFT JOIN unit_documents ud ON ud.model_id = um.id WHERE um.nominal_tonnage = ? AND um.voltage = ? ORDER BY um.id LIMIT 1`)
     .bind(requestedTonnage, requestedVoltage)
     .first();
-
   return relaxed || null;
+}
+
+function combineDbWb(db, wb) {
+  const dbText = normalizeText(db);
+  const wbText = normalizeText(wb);
+  if (dbText && wbText) return `${dbText} / ${wbText}`;
+  return dbText || wbText || '—';
+}
+
+function buildHeatingInput(unit, match) {
+  if (normalizeText(match?.heating_gas_input)) return normalizeText(match.heating_gas_input);
+  if (normalizeText(match?.electric_heat_capacity)) return `Electric Heat ${normalizeText(match.electric_heat_capacity)}`;
+  if (unit.heatType === 'None') return 'No heat';
+  return `${unit.heatType} ${unit.heatCapacity}`.trim();
 }
 
 function previewFallback(unit) {
@@ -310,20 +248,6 @@ function previewFallback(unit) {
     wiringUrl: '',
     iomUrl: ''
   };
-}
-
-function combineDbWb(db, wb) {
-  const dbText = normalizeText(db);
-  const wbText = normalizeText(wb);
-  if (dbText && wbText) return `${dbText} / ${wbText}`;
-  return dbText || wbText || '—';
-}
-
-function buildHeatingInput(unit, match) {
-  if (normalizeText(match?.heating_gas_input)) return normalizeText(match.heating_gas_input);
-  if (normalizeText(match?.electric_heat_capacity)) return `Electric Heat ${normalizeText(match.electric_heat_capacity)}`;
-  if (unit.heatType === 'None') return 'No heat';
-  return `${unit.heatType} ${unit.heatCapacity}`.trim();
 }
 
 function buildPreviewRow(unit, match) {
@@ -368,10 +292,7 @@ async function handlePreviewSchedule(request, env) {
   const payload = await request.json();
   const units = Array.isArray(payload?.units) ? payload.units : [];
   const rows = [];
-  for (const unit of units) {
-    const match = await findMatchingImportedRow(env, unit);
-    rows.push(buildPreviewRow(unit, match));
-  }
+  for (const unit of units) rows.push(buildPreviewRow(unit, await findMatchingImportedRow(env, unit)));
   return json({ ok: true, rows });
 }
 
@@ -389,8 +310,8 @@ function updateSheetRange(ws, maxCol, maxRow) {
 }
 
 async function loadTemplateWorkbook(env) {
-  const object = await env.TEMPLATES.get('SSR-Schedule-Example.xlsx');
-  if (!object) throw new Error('Template workbook not found in R2 bucket.');
+  const object = await env.TEMPLATES.get('SSR-Schedule-Example-June.xlsx');
+  if (!object) throw new Error('June template workbook not found in R2 bucket.');
   const buffer = await object.arrayBuffer();
   return XLSX.read(buffer, { type: 'array', cellStyles: true, cellNF: true, cellDates: true });
 }
@@ -401,44 +322,43 @@ async function createWorkbook(env, units) {
   const ws = wb.Sheets[sheetName];
   if (!ws) throw new Error('Template worksheet not found.');
 
-  let currentRow = 4;
+  let currentRow = 3;
   for (const unit of units) {
-    const match = await findMatchingImportedRow(env, unit);
-    const row = buildPreviewRow(unit, match);
+    const row = buildPreviewRow(unit, await findMatchingImportedRow(env, unit));
 
-    setCell(ws, 2, currentRow, row.tag);
-    setCell(ws, 3, currentRow, row.areaServed === '—' ? '' : row.areaServed);
-    setCell(ws, 4, currentRow, row.manufacturer);
-    setCell(ws, 5, currentRow, row.modelNumber);
-    setCell(ws, 6, currentRow, Number(row.nominalTons));
-    setCell(ws, 7, currentRow, row.unitType);
-    setCell(ws, 8, currentRow, row.unitEer === '—' ? '' : row.unitEer);
-    setCell(ws, 9, currentRow, row.seerIeerr === '—' ? '' : row.seerIeerr);
-    setCell(ws, 10, currentRow, row.supplyCfm === '—' ? '' : Number(row.supplyCfm));
-    setCell(ws, 11, currentRow, row.supplyEsp === '—' ? '' : row.supplyEsp);
-    setCell(ws, 12, currentRow, row.supplyBhp === '—' ? '' : row.supplyBhp);
-    setCell(ws, 13, currentRow, row.supplyHp === '—' ? '' : row.supplyHp);
-    setCell(ws, 14, currentRow, row.supplyRpm === '—' ? '' : row.supplyRpm);
-    setCell(ws, 15, currentRow, row.coolingEat === '—' ? '' : row.coolingEat);
-    setCell(ws, 16, currentRow, row.coolingLat === '—' ? '' : row.coolingLat);
-    setCell(ws, 17, currentRow, row.coolingSensible === '—' ? '' : row.coolingSensible);
-    setCell(ws, 18, currentRow, row.coolingTotal === '—' ? '' : row.coolingTotal);
-    setCell(ws, 19, currentRow, row.heatingEat === '—' ? '' : row.heatingEat);
-    setCell(ws, 20, currentRow, row.heatingLat === '—' ? '' : row.heatingLat);
-    setCell(ws, 21, currentRow, row.heatingTotalCapacity === '—' ? '' : row.heatingTotalCapacity);
-    setCell(ws, 22, currentRow, row.heatingInput === 'No heat' ? '' : row.heatingInput);
-    setCell(ws, 23, currentRow, row.voltPh);
-    setCell(ws, 24, currentRow, row.mca === '—' ? '' : row.mca);
-    setCell(ws, 25, currentRow, row.mocp === '—' ? '' : row.mocp);
-    setCell(ws, 26, currentRow, row.filterType === '—' ? '' : row.filterType);
-    setCell(ws, 27, currentRow, row.weight === '—' ? '' : Number(row.weight));
-    setCell(ws, 28, currentRow, row.remarks === '—' ? '' : row.remarks);
+    setCell(ws, 1, currentRow, row.tag);
+    setCell(ws, 2, currentRow, row.areaServed === '—' ? '' : row.areaServed);
+    setCell(ws, 3, currentRow, row.manufacturer);
+    setCell(ws, 4, currentRow, row.modelNumber);
+    setCell(ws, 5, currentRow, Number(row.nominalTons));
+    setCell(ws, 6, currentRow, row.unitType);
+    setCell(ws, 7, currentRow, row.unitEer === '—' ? '' : row.unitEer);
+    setCell(ws, 8, currentRow, row.seerIeerr === '—' ? '' : row.seerIeerr);
+    setCell(ws, 9, currentRow, row.supplyCfm === '—' ? '' : Number(row.supplyCfm));
+    setCell(ws, 10, currentRow, row.supplyEsp === '—' ? '' : row.supplyEsp);
+    setCell(ws, 11, currentRow, row.supplyBhp === '—' ? '' : row.supplyBhp);
+    setCell(ws, 12, currentRow, row.supplyHp === '—' ? '' : row.supplyHp);
+    setCell(ws, 13, currentRow, row.supplyRpm === '—' ? '' : row.supplyRpm);
+    setCell(ws, 14, currentRow, row.coolingEat === '—' ? '' : row.coolingEat);
+    setCell(ws, 15, currentRow, row.coolingLat === '—' ? '' : row.coolingLat);
+    setCell(ws, 16, currentRow, row.coolingSensible === '—' ? '' : row.coolingSensible);
+    setCell(ws, 17, currentRow, row.coolingTotal === '—' ? '' : row.coolingTotal);
+    setCell(ws, 18, currentRow, row.heatingEat === '—' ? '' : row.heatingEat);
+    setCell(ws, 19, currentRow, row.heatingLat === '—' ? '' : row.heatingLat);
+    setCell(ws, 20, currentRow, row.heatingTotalCapacity === '—' ? '' : row.heatingTotalCapacity);
+    setCell(ws, 21, currentRow, row.heatingInput === 'No heat' ? '' : row.heatingInput);
+    setCell(ws, 22, currentRow, row.voltPh);
+    setCell(ws, 23, currentRow, row.mca === '—' ? '' : row.mca);
+    setCell(ws, 24, currentRow, row.mocp === '—' ? '' : row.mocp);
+    setCell(ws, 25, currentRow, row.filterType === '—' ? '' : row.filterType);
+    setCell(ws, 26, currentRow, row.weight === '—' ? '' : Number(row.weight));
+    setCell(ws, 27, currentRow, row.remarks === '—' ? '' : row.remarks);
 
     currentRow += 1;
   }
 
   const existingRange = XLSX.utils.decode_range(ws['!ref'] || 'A1');
-  updateSheetRange(ws, Math.max(existingRange.e.c + 1, 28), Math.max(existingRange.e.r + 1, currentRow));
+  updateSheetRange(ws, Math.max(existingRange.e.c + 1, 27), Math.max(existingRange.e.r + 1, currentRow));
   return XLSX.write(wb, { type: 'array', bookType: 'xlsx', cellStyles: true });
 }
 
