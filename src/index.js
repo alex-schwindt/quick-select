@@ -59,25 +59,8 @@ function normalizeHeatCapacity(value) {
   return text;
 }
 
-function normalizeNumericText(value) {
-  const text = normalizeText(value).replace(/,/g, '');
-  if (!text) return '';
-  const n = Number(text);
-  return Number.isFinite(n) ? String(n) : text;
-}
-
-function hasMeaningfulValue(value) {
-  const text = normalizeNumericText(value);
-  if (!text) return false;
-  const n = Number(text);
-  return Number.isFinite(n) ? n !== 0 : true;
-}
-
 function slugify(value) {
-  return String(value ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/(^-|-$)/g, '');
+  return String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 }
 
 function buildSelectionCode(unit) {
@@ -134,71 +117,100 @@ function sheetToMatrix(sheet) {
   const rows = xlsxRowCount(sheet);
   const cols = xlsxColCount(sheet);
   const out = [];
-  for (let r = 1; r <= rows; r++) {
+  for (let r = 1; r <= rows; r += 1) {
     const row = [];
-    for (let c = 1; c <= cols; c++) row.push(xlsxCellValue(sheet, c, r));
+    for (let c = 1; c <= cols; c += 1) row.push(xlsxCellValue(sheet, c, r));
     out.push(row);
   }
   return out;
 }
 
-function looksLikeTypicalCatalogRow(row) {
-  const descriptor = normalizeText(row[0]);
-  const modelNumber = normalizeText(row[1]);
-  return /\b\d+(?:\.\d+)?-?ton\b/i.test(descriptor) && /\b(?:gas|heat pump|hp)\b/i.test(descriptor) && /^[A-Z0-9]{8,}$/i.test(modelNumber);
+function findHeaderRowIndex(matrix) {
+  for (let i = 0; i < matrix.length; i += 1) {
+    const rowText = matrix[i].map(normalizeText).join(' | ').toLowerCase();
+    if (rowText.includes('tag #') && rowText.includes('model number') && rowText.includes('brand') && rowText.includes('qty')) {
+      return i;
+    }
+  }
+  return -1;
 }
 
-function inferVoltageFromRow(row) {
+function columnIndexFromHeader(matrix, headerIndex, matcher) {
+  if (headerIndex < 0 || !matrix[headerIndex]) return -1;
+  const row = matrix[headerIndex].map(normalizeText);
+  for (let i = 0; i < row.length; i += 1) {
+    if (matcher(row[i].toLowerCase())) return i;
+  }
+  return -1;
+}
+
+function findDataStartIndex(matrix, headerIndex, descriptorCol, modelCol) {
+  for (let i = headerIndex + 1; i < matrix.length; i += 1) {
+    const descriptor = normalizeText(matrix[i][descriptorCol]);
+    const model = normalizeText(matrix[i][modelCol]);
+    if (/\b\d+(?:\.\d+)?-?ton\b/i.test(descriptor) && model) return i;
+  }
+  return -1;
+}
+
+function rowLooksLikeCatalogData(row, descriptorCol, modelCol, brandCol) {
+  const descriptor = normalizeText(row[descriptorCol]);
+  const model = normalizeText(row[modelCol]);
+  const brand = brandCol >= 0 ? normalizeText(row[brandCol]) : '';
+  if (!descriptor && !model && !brand) return false;
+  if (!descriptor || !model) return false;
+  if (!/\bton\b/i.test(descriptor)) return false;
+  if (brand && !/tempmaster/i.test(brand) && brand.length < 2) return false;
+  return true;
+}
+
+function inferVoltageFromRow(row, voltageCol) {
+  if (voltageCol >= 0) {
+    const direct = normalizeVoltage(row[voltageCol]);
+    if (direct) return direct;
+  }
   for (const cell of row) {
-    const text = normalizeText(cell);
-    const voltage = normalizeVoltage(text);
-    if (voltage) {
-      if (/^(208\/230\/3|460\/3)$/.test(voltage)) return voltage;
-    }
+    const voltage = normalizeVoltage(cell);
+    if (voltage === '208/230/3' || voltage === '460/3') return voltage;
   }
   return '';
 }
 
-function inferCatalogRowFromTypicalLayout(row) {
-  const descriptor = normalizeText(row[0]);
-  const modelNumber = normalizeText(row[1]);
+function inferCatalogRowFromTypicalLayout(row, descriptorCol, modelCol, voltageCol, metricCols) {
+  const descriptor = normalizeText(row[descriptorCol]);
+  const modelNumber = normalizeText(row[modelCol]);
   if (!descriptor || !modelNumber) return null;
 
   const tonnageMatch = descriptor.match(/(\d+(?:\.\d+)?)\s*-?\s*Ton/i);
   const gasMatch = descriptor.match(/(\d+(?:\.\d+)?)\s*MBH/i);
-  const kwMatch = descriptor.match(/(\d+(?:\.\d+)?)\s*kW/i);
   const isHeatPump = /\bheat pump\b|\bhp\b/i.test(descriptor);
   const isGas = /\bgas\b/i.test(descriptor);
   const isElectric = /\belectric\b/i.test(descriptor);
-  const voltage = inferVoltageFromRow(row) || normalizeVoltage(descriptor);
-  const coolingCfm = numberOrNull(row[4]);
-  const eer = cleanBlank(row[7]);
-  const ieer = cleanBlank(row[8]);
-  const coolingTotal = cleanBlank(row[20]);
-  const refrigerant = cleanBlank(row[14]);
-  const mca = cleanBlank(row[26]);
-  const mocp = cleanBlank(row[27]);
-  const weight = cleanBlank(row[29]);
-
+  const isHighHeat = /high heat/i.test(descriptor);
+  const voltage = inferVoltageFromRow(row, voltageCol) || normalizeVoltage(descriptor);
   const tonnageValue = tonnageMatch ? Number(tonnageMatch[1]) : null;
   if (!tonnageValue) return null;
 
   let family = 'AC';
   if (isHeatPump) family = 'Heat Pump';
 
+  let efficiency = 'Standard';
+  if (isHighHeat) efficiency = 'High';
+
   let heatType = 'None';
   let heatCapacity = '';
   if (isGas && gasMatch) {
     heatType = 'Aluminum Gas Heat';
     heatCapacity = `${Number(gasMatch[1]) % 1 === 0 ? Number(gasMatch[1]).toFixed(0) : gasMatch[1]} MBH`;
-  } else if (isElectric && kwMatch) {
+  } else if (isElectric) {
     heatType = 'Electric Heat';
-    heatCapacity = `${Number(kwMatch[1]) % 1 === 0 ? Number(kwMatch[1]).toFixed(0) : kwMatch[1]} kW`;
   }
+
+  const get = (name) => metricCols[name] >= 0 ? row[metricCols[name]] : '';
 
   return {
     family,
-    efficiency: 'Standard',
+    efficiency,
     tonnage: tonnageValue,
     voltage,
     heat_type: heatType,
@@ -206,15 +218,15 @@ function inferCatalogRowFromTypicalLayout(row) {
     model_number: modelNumber,
     model_code: modelNumber,
     unit_type: family === 'Heat Pump' ? 'Packaged Heat Pump' : 'Packaged AC',
-    unit_eer: eer,
-    seer_ieer: ieer,
-    cooling_cfm: coolingCfm,
-    cooling_total_capacity_mbh: coolingTotal,
-    heating_capacity_mbtu: heatCapacity,
-    refrigerant_type: refrigerant,
-    mca,
-    mocp,
-    operating_weight_lbs: weight,
+    unit_eer: cleanBlank(get('eer')),
+    seer_ieer: cleanBlank(get('seer_ieer')),
+    cooling_cfm: numberOrNull(get('airflow_cfm')),
+    cooling_total_capacity_mbh: cleanBlank(get('cooling_total')),
+    heating_capacity_mbtu: cleanBlank(get('gas_output')) || cleanBlank(heatCapacity),
+    refrigerant_type: cleanBlank(get('refrigerant')),
+    mca: cleanBlank(get('mca')),
+    mocp: cleanBlank(get('mocp')),
+    operating_weight_lbs: cleanBlank(get('weight')),
     source_descriptor: descriptor
   };
 }
@@ -288,6 +300,72 @@ async function upsertCatalogRow(env, row) {
   return 'inserted';
 }
 
+async function importTypicalWorkbookCatalog(env, workbook) {
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  if (!sheet) throw new Error('No worksheet found in workbook.');
+  const matrix = sheetToMatrix(sheet);
+  const headerIndex = findHeaderRowIndex(matrix);
+  if (headerIndex < 0) throw new Error('Could not find header row in typical DS Commercial workbook.');
+
+  const descriptorCol = columnIndexFromHeader(matrix, headerIndex, (t) => t.includes('tag #'));
+  const modelCol = columnIndexFromHeader(matrix, headerIndex, (t) => t.includes('model number'));
+  const brandCol = columnIndexFromHeader(matrix, headerIndex, (t) => t === 'brand' || t.includes('brand'));
+  const voltageCol = columnIndexFromHeader(matrix, headerIndex, (t) => t === 'voltage' || t.includes(' voltage'));
+  const metricCols = {
+    airflow_cfm: columnIndexFromHeader(matrix, headerIndex, (t) => t.includes('airflow') && t.includes('cfm')),
+    eer: columnIndexFromHeader(matrix, headerIndex, (t) => t === 'eer' || t.endsWith(' eer')),
+    seer_ieer: columnIndexFromHeader(matrix, headerIndex, (t) => t.includes('seer/ieer') || t.includes('seer') || t.includes('ieer')),
+    refrigerant: columnIndexFromHeader(matrix, headerIndex, (t) => t.includes('refrig')),
+    cooling_total: columnIndexFromHeader(matrix, headerIndex, (t) => t.includes('capacity mbh') || t.includes('total')),
+    gas_output: columnIndexFromHeader(matrix, headerIndex, (t) => t.includes('gas') && t.includes('mbh')),
+    mca: columnIndexFromHeader(matrix, headerIndex, (t) => t === 'mca' || t.includes('mca')),
+    mocp: columnIndexFromHeader(matrix, headerIndex, (t) => t.includes('max fuse') || t.includes('mocp')),
+    weight: columnIndexFromHeader(matrix, headerIndex, (t) => t.includes('weight'))
+  };
+
+  if (descriptorCol < 0 || modelCol < 0) throw new Error('Could not find descriptor/model columns in workbook.');
+  const startIndex = findDataStartIndex(matrix, headerIndex, descriptorCol, modelCol);
+  if (startIndex < 0) throw new Error('Could not find first data row in workbook.');
+
+  let rowsRead = 0;
+  let inserted = 0;
+  let updated = 0;
+  const issues = [];
+  let blankRun = 0;
+
+  for (let i = startIndex; i < matrix.length; i += 1) {
+    const row = matrix[i];
+    const descriptor = normalizeText(row[descriptorCol]);
+    const model = normalizeText(row[modelCol]);
+
+    if (!descriptor && !model) {
+      blankRun += 1;
+      if (blankRun >= 5) break;
+      continue;
+    }
+    blankRun = 0;
+
+    if (!rowLooksLikeCatalogData(row, descriptorCol, modelCol, brandCol)) continue;
+
+    const parsed = inferCatalogRowFromTypicalLayout(row, descriptorCol, modelCol, voltageCol, metricCols);
+    if (!parsed) {
+      issues.push(`Unable to parse row ${i + 1}.`);
+      continue;
+    }
+
+    rowsRead += 1;
+    try {
+      const action = await upsertCatalogRow(env, parsed);
+      if (action === 'inserted') inserted += 1;
+      if (action === 'updated') updated += 1;
+    } catch (error) {
+      issues.push(`Row ${i + 1} (${parsed.model_number}): ${error.message}`);
+    }
+  }
+
+  return { ok: true, rows_read: rowsRead, inserted, updated, issues };
+}
+
 async function handleAdminImportCatalog(request, env) {
   const ct = request.headers.get('Content-Type') || '';
   if (!ct.toLowerCase().includes('multipart/form-data')) return json({ error: 'Expected multipart/form-data upload.' }, 400);
@@ -296,16 +374,15 @@ async function handleAdminImportCatalog(request, env) {
   if (!file || typeof file === 'string') return json({ error: 'Missing file field.' }, 400);
 
   const name = normalizeText(file.name).toLowerCase();
-  const issues = [];
-  let rowsRead = 0;
-  let inserted = 0;
-  let updated = 0;
-
   if (name.endsWith('.csv')) {
     const text = await file.text();
     const wb = XLSX.read(text, { type: 'string' });
     const sheet = wb.Sheets[wb.SheetNames[0]];
     const records = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+    let rowsRead = 0;
+    let inserted = 0;
+    let updated = 0;
+    const issues = [];
     for (const rec of records) {
       const modelNumber = normalizeText(rec.model_number || rec['Model Number']);
       if (!modelNumber) continue;
@@ -330,44 +407,21 @@ async function handleAdminImportCatalog(request, env) {
         mocp: cleanBlank(rec.mocp || rec['MOCP']),
         operating_weight_lbs: cleanBlank(rec.operating_weight_lbs || rec['Operating Weight Lbs'])
       };
-      const action = await upsertCatalogRow(env, row);
-      if (action === 'inserted') inserted += 1;
-      if (action === 'updated') updated += 1;
+      try {
+        const action = await upsertCatalogRow(env, row);
+        if (action === 'inserted') inserted += 1;
+        if (action === 'updated') updated += 1;
+      } catch (error) {
+        issues.push(`${modelNumber}: ${error.message}`);
+      }
     }
     return json({ ok: true, rows_read: rowsRead, inserted, updated, issues });
   }
 
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: 'array', cellText: true, cellDates: true });
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  if (!sheet) return json({ error: 'No worksheet found in workbook.' }, 400);
-  const matrix = sheetToMatrix(sheet);
-
-  const parsedRows = [];
-  for (let i = 0; i < matrix.length; i += 1) {
-    const row = matrix[i];
-    if (!looksLikeTypicalCatalogRow(row)) continue;
-    const parsed = inferCatalogRowFromTypicalLayout(row);
-    if (!parsed) {
-      issues.push(`Unable to parse row ${i + 1}.`);
-      continue;
-    }
-    if (!parsed.voltage) issues.push(`Row ${i + 1} missing recognizable voltage for model ${parsed.model_number}.`);
-    parsedRows.push({ ...parsed, source_row_number: i + 1 });
-  }
-
-  for (const row of parsedRows) {
-    rowsRead += 1;
-    try {
-      const action = await upsertCatalogRow(env, row);
-      if (action === 'inserted') inserted += 1;
-      if (action === 'updated') updated += 1;
-    } catch (error) {
-      issues.push(`Row ${row.source_row_number} (${row.model_number}): ${error.message}`);
-    }
-  }
-
-  return json({ ok: true, rows_read: rowsRead, inserted, updated, issues });
+  const result = await importTypicalWorkbookCatalog(env, workbook);
+  return json(result);
 }
 
 async function findMatchingImportedRow(env, unit) {
