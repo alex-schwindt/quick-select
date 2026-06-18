@@ -187,14 +187,40 @@ async function findMatchingImportedRow(env, unit) {
   const requestedType = normalizeUnitType(unit.family || unit.unitType);
   const requestedVoltage = normalizeVoltage(unit.voltage);
   const requestedTonnage = Number(unit.tonnage);
-  const exact = await env.DB.prepare(`SELECT um.*, ud.cutsheet_url, ud.accessories_url, ud.wiring_url, ud.iom_url FROM unit_models um LEFT JOIN unit_documents ud ON ud.model_id = um.id WHERE um.unit_type = ? AND um.nominal_tonnage = ? AND um.voltage = ? ORDER BY um.id LIMIT 1`)
-    .bind(requestedType, requestedTonnage, requestedVoltage)
-    .first();
+
+  const exact = await env.DB.prepare(`
+    SELECT um.*, ud.cutsheet_url, ud.accessories_url, ud.wiring_url, ud.iom_url
+    FROM unit_models um
+    LEFT JOIN unit_documents ud ON ud.model_id = um.id
+    WHERE um.unit_type = ?
+      AND um.nominal_tonnage = ?
+      AND um.voltage = ?
+    ORDER BY um.id
+    LIMIT 1
+  `).bind(requestedType, requestedTonnage, requestedVoltage).first();
   if (exact) return exact;
-  const relaxed = await env.DB.prepare(`SELECT um.*, ud.cutsheet_url, ud.accessories_url, ud.wiring_url, ud.iom_url FROM unit_models um LEFT JOIN unit_documents ud ON ud.model_id = um.id WHERE um.nominal_tonnage = ? AND um.voltage = ? ORDER BY um.id LIMIT 1`)
-    .bind(requestedTonnage, requestedVoltage)
-    .first();
-  return relaxed || null;
+
+  const byTonnageVoltage = await env.DB.prepare(`
+    SELECT um.*, ud.cutsheet_url, ud.accessories_url, ud.wiring_url, ud.iom_url
+    FROM unit_models um
+    LEFT JOIN unit_documents ud ON ud.model_id = um.id
+    WHERE um.nominal_tonnage = ?
+      AND um.voltage = ?
+    ORDER BY um.id
+    LIMIT 1
+  `).bind(requestedTonnage, requestedVoltage).first();
+  if (byTonnageVoltage) return byTonnageVoltage;
+
+  const byTonnageOnly = await env.DB.prepare(`
+    SELECT um.*, ud.cutsheet_url, ud.accessories_url, ud.wiring_url, ud.iom_url
+    FROM unit_models um
+    LEFT JOIN unit_documents ud ON ud.model_id = um.id
+    WHERE um.nominal_tonnage = ?
+    ORDER BY um.id
+    LIMIT 1
+  `).bind(requestedTonnage).first();
+
+  return byTonnageOnly || null;
 }
 
 function combineDbWb(db, wb) {
