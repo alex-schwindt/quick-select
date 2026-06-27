@@ -299,7 +299,7 @@ function buildPreviewRow(unit, match) {
     mca: asBlank(match.mca) || '—',
     mocp: asBlank(match.mocp) || '—',
     filterType: '—',
-    weight: asBlank(match.weight) || '—',
+    weight: numberOrNull(match.weight),
     remarks: optionSummary(unit) || '—',
     matchFound: true
   };
@@ -360,7 +360,7 @@ function writeJuneRow(ws, rowNumber, row) {
   setCell(ws, 24, rowNumber, row.mca === '—' ? '' : row.mca);
   setCell(ws, 25, rowNumber, row.mocp === '—' ? '' : row.mocp);
   setCell(ws, 26, rowNumber, row.filterType === '—' ? '' : row.filterType);
-  setCell(ws, 27, rowNumber, row.weight === '—' ? '' : Number(row.weight));
+  setCell(ws, 27, rowNumber, Number.isFinite(row.weight) ? row.weight : '');
   setCell(ws, 28, rowNumber, row.remarks === '—' ? '' : row.remarks);
 }
 
