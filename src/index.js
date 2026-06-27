@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 
+
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -7,23 +8,28 @@ function json(data, status = 200) {
   });
 }
 
+
 function normalizeText(value) {
   return String(value ?? '').trim();
 }
+
 
 function cleanBlank(value) {
   const text = normalizeText(value);
   return text ? text : null;
 }
 
+
 function asBlank(value) {
   return value == null ? '' : String(value);
 }
+
 
 function numberOrNull(value) {
   const n = Number(String(value ?? '').replace(/,/g, '').trim());
   return Number.isFinite(n) ? n : null;
 }
+
 
 function normalizeVoltage(value) {
   const s = normalizeText(value).toLowerCase().replace(/\s+/g, '').replace(/-/g, '/');
@@ -33,6 +39,7 @@ function normalizeVoltage(value) {
   return normalizeText(value);
 }
 
+
 function normalizeUnitType(value) {
   const v = normalizeText(value).toLowerCase();
   if (!v) return '';
@@ -40,6 +47,7 @@ function normalizeUnitType(value) {
   if (['heat pump', 'packaged heat pump', 'hp', 'packaged hp'].includes(v)) return 'Packaged Heat Pump';
   return normalizeText(value);
 }
+
 
 function normalizeHeatType(value) {
   const v = normalizeText(value).toLowerCase();
@@ -49,13 +57,16 @@ function normalizeHeatType(value) {
   return normalizeText(value);
 }
 
+
 function normalizeHeatCapacity(value) {
   return normalizeText(value);
 }
 
+
 function slugify(value) {
   return String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 }
+
 
 function buildSelectionCode(unit) {
   const familyCode = normalizeUnitType(unit.family || unit.unitType).toLowerCase().includes('heat pump') ? 'HP' : 'AC';
@@ -73,6 +84,7 @@ function buildSelectionCode(unit) {
   return `${familyCode}-${tonnageCode}-${voltageCode}-${heatCode}-${reheatCode}-${econCode}`;
 }
 
+
 function optionSummary(unit) {
   return normalizeText(unit.remarks) || [
     unit.hotGasReheat ? 'Hot Gas Reheat' : null,
@@ -80,6 +92,7 @@ function optionSummary(unit) {
     unit.economizer === 'powered' ? 'Economizer w/ Powered Exhaust' : null
   ].filter(Boolean).join(', ');
 }
+
 
 async function ensureDocuments(env, modelId, modelNumber) {
   const existing = await env.DB.prepare('SELECT model_id FROM unit_documents WHERE model_id = ?').bind(modelId).first();
@@ -95,6 +108,7 @@ async function ensureDocuments(env, modelId, modelNumber) {
     )
     .run();
 }
+
 
 function csvRowToModel(rec) {
   const modelNumber = normalizeText(rec.Model_number || rec.model_number);
@@ -130,6 +144,7 @@ function csvRowToModel(rec) {
   };
 }
 
+
 async function upsertCatalogRow(env, row) {
   const existing = await env.DB.prepare(`SELECT id FROM unit_models WHERE model_number = ? LIMIT 1`).bind(row.model_number).first();
   if (existing?.id) {
@@ -147,6 +162,7 @@ async function upsertCatalogRow(env, row) {
   return 'inserted';
 }
 
+
 async function handleAdminImportCatalog(request, env) {
   const ct = request.headers.get('Content-Type') || '';
   if (!ct.toLowerCase().includes('multipart/form-data')) return json({ error: 'Expected multipart/form-data upload.' }, 400);
@@ -160,10 +176,12 @@ async function handleAdminImportCatalog(request, env) {
   const sheet = wb.Sheets[wb.SheetNames[0]];
   const records = XLSX.utils.sheet_to_json(sheet, { defval: '' });
 
+
   let rowsRead = 0;
   let inserted = 0;
   let updated = 0;
   const issues = [];
+
 
   for (const rec of records) {
     const row = csvRowToModel(rec);
@@ -183,15 +201,52 @@ async function handleAdminImportCatalog(request, env) {
   return json({ ok: true, rows_read: rowsRead, inserted, updated, issues });
 }
 
+
 async function findMatchingImportedRow(env, unit) {
   const requestedType = normalizeUnitType(unit.family || unit.unitType);
   const requestedVoltage = normalizeVoltage(unit.voltage);
   const requestedTonnage = Number(unit.tonnage);
 
-  const exact = await env.DB.prepare(`
-    SELECT um.*, ud.cutsheet_url, ud.accessories_url, ud.wiring_url, ud.iom_url
+  const selectClause = `
+    SELECT
+      um.id,
+      um.model_number,
+      um.manufacturer,
+      um.unit_type,
+      um.nominal_tonnage,
+      um.cfm,
+      um.hp,
+      um.esp,
+      um.rpm,
+      um.cooling_eat_db,
+      um.cooling_eat_wb,
+      um.cooling_lat_db,
+      um.cooling_lat_wb,
+      um.cooling_total_capacity,
+      um.cooling_sensible_capacity,
+      um.eer,
+      um.seer_ieer,
+      um.heating_eat,
+      um.heating_lat,
+      um.heating_capacity,
+      um.heating_gas_input,
+      um.heatpump_total_capacity,
+      um.heat_pump_hspf,
+      um.electric_heat_capacity,
+      um.voltage,
+      um.mca,
+      um.mocp,
+      um.weight AS weight,
+      ud.cutsheet_url,
+      ud.accessories_url,
+      ud.wiring_url,
+      ud.iom_url
     FROM unit_models um
     LEFT JOIN unit_documents ud ON ud.model_id = um.id
+  `;
+
+  const exact = await env.DB.prepare(`
+    ${selectClause}
     WHERE um.unit_type = ?
       AND um.nominal_tonnage = ?
       AND um.voltage = ?
@@ -201,9 +256,7 @@ async function findMatchingImportedRow(env, unit) {
   if (exact) return exact;
 
   const byTonnageVoltage = await env.DB.prepare(`
-    SELECT um.*, ud.cutsheet_url, ud.accessories_url, ud.wiring_url, ud.iom_url
-    FROM unit_models um
-    LEFT JOIN unit_documents ud ON ud.model_id = um.id
+    ${selectClause}
     WHERE um.nominal_tonnage = ?
       AND um.voltage = ?
     ORDER BY um.id
@@ -212,9 +265,7 @@ async function findMatchingImportedRow(env, unit) {
   if (byTonnageVoltage) return byTonnageVoltage;
 
   const byTonnageOnly = await env.DB.prepare(`
-    SELECT um.*, ud.cutsheet_url, ud.accessories_url, ud.wiring_url, ud.iom_url
-    FROM unit_models um
-    LEFT JOIN unit_documents ud ON ud.model_id = um.id
+    ${selectClause}
     WHERE um.nominal_tonnage = ?
     ORDER BY um.id
     LIMIT 1
@@ -223,6 +274,7 @@ async function findMatchingImportedRow(env, unit) {
   return byTonnageOnly || null;
 }
 
+
 function combineDbWb(db, wb) {
   const dbText = normalizeText(db);
   const wbText = normalizeText(wb);
@@ -230,12 +282,14 @@ function combineDbWb(db, wb) {
   return dbText || wbText || '—';
 }
 
+
 function buildHeatingInput(unit, match) {
   if (normalizeText(match?.heating_gas_input)) return normalizeText(match.heating_gas_input);
   if (normalizeText(match?.electric_heat_capacity)) return `Electric Heat ${normalizeText(match.electric_heat_capacity)}`;
   if (unit.heatType === 'None') return 'No heat';
   return `${unit.heatType} ${unit.heatCapacity}`.trim();
 }
+
 
 function previewFallback(unit) {
   const unitType = normalizeUnitType(unit.family || unit.unitType) || normalizeText(unit.family) || 'Packaged AC';
@@ -271,6 +325,7 @@ function previewFallback(unit) {
   };
 }
 
+
 function buildPreviewRow(unit, match) {
   if (!match) return previewFallback(unit);
   return {
@@ -305,13 +360,23 @@ function buildPreviewRow(unit, match) {
   };
 }
 
+
 async function handlePreviewSchedule(request, env) {
   const payload = await request.json();
   const units = Array.isArray(payload?.units) ? payload.units : [];
   const rows = [];
-  for (const unit of units) rows.push(buildPreviewRow(unit, await findMatchingImportedRow(env, unit)));
+
+  for (const unit of units) {
+    const match = await findMatchingImportedRow(env, unit);
+    const row = buildPreviewRow(unit, match);
+    row._debug_model_number = match?.model_number || null;
+    row._debug_weight = match?.weight ?? null;
+    rows.push(row);
+  }
+
   return json({ ok: true, rows });
 }
+
 
 function setCell(ws, col, row, value) {
   const addr = XLSX.utils.encode_cell({ c: col - 1, r: row - 1 });
@@ -322,9 +387,11 @@ function setCell(ws, col, row, value) {
   ws[addr] = { t: typeof value === 'number' ? 'n' : 's', v: value };
 }
 
+
 function updateSheetRange(ws, maxCol, maxRow) {
   ws['!ref'] = XLSX.utils.encode_range({ s: { c: 0, r: 0 }, e: { c: maxCol - 1, r: maxRow - 1 } });
 }
+
 
 async function loadTemplateWorkbook(env) {
   let object = await env.TEMPLATES.get('SSR-Schedule-Example June.xlsx');
@@ -333,6 +400,7 @@ async function loadTemplateWorkbook(env) {
   if (object) return { workbook: XLSX.read(await object.arrayBuffer(), { type: 'array', cellStyles: true, cellNF: true, cellDates: true }), flavor: 'legacy' };
   throw new Error('No export template found in R2. Upload SSR-Schedule-Example June.xlsx or SSR-Schedule-Example.xlsx.');
 }
+
 
 function writeJuneRow(ws, rowNumber, row) {
   setCell(ws, 2, rowNumber, row.tag);
@@ -364,6 +432,7 @@ function writeJuneRow(ws, rowNumber, row) {
   setCell(ws, 28, rowNumber, row.remarks === '—' ? '' : row.remarks);
 }
 
+
 async function createWorkbook(env, units) {
   const loaded = await loadTemplateWorkbook(env);
   const wb = loaded.workbook;
@@ -371,8 +440,10 @@ async function createWorkbook(env, units) {
   const ws = wb.Sheets[sheetName];
   if (!ws) throw new Error('Template worksheet not found.');
 
+
   const startRow = loaded.flavor === 'june' ? 4 : 4;
   let currentRow = startRow;
+
 
   for (const unit of units) {
     const row = buildPreviewRow(unit, await findMatchingImportedRow(env, unit));
@@ -380,14 +451,17 @@ async function createWorkbook(env, units) {
     currentRow += 1;
   }
 
+
   const existingRange = XLSX.utils.decode_range(ws['!ref'] || 'A1');
   updateSheetRange(ws, Math.max(existingRange.e.c + 1, 28), Math.max(existingRange.e.r + 1, currentRow));
   return XLSX.write(wb, { type: 'array', bookType: 'xlsx', cellStyles: true });
 }
 
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+
 
     if (request.method === 'POST' && url.pathname === '/api/admin/import-catalog') {
       try {
@@ -397,6 +471,7 @@ export default {
       }
     }
 
+
     if (request.method === 'POST' && url.pathname === '/api/preview-schedule') {
       try {
         return await handlePreviewSchedule(request, env);
@@ -404,6 +479,7 @@ export default {
         return json({ error: error.message || 'Preview failed.' }, 500);
       }
     }
+
 
     if (request.method === 'POST' && url.pathname === '/api/export-schedule') {
       try {
@@ -413,13 +489,14 @@ export default {
         return new Response(file, {
           headers: {
             'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            'Content-Disposition': 'attachment; filename="SSR-Schedule-Export.xlsx"'
+            'Content-Disposition': 'attachment; filename=\"SSR-Schedule-Export.xlsx\"'
           }
         });
       } catch (error) {
         return json({ error: error.message || 'Export failed' }, 500);
       }
     }
+
 
     return env.ASSETS.fetch(request);
   }
