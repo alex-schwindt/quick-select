@@ -335,33 +335,33 @@ async function loadTemplateWorkbook(env) {
 }
 
 function writeJuneRow(ws, rowNumber, row) {
-  setCell(ws, 1, rowNumber, row.tag);
-  setCell(ws, 2, rowNumber, row.areaServed === '—' ? '' : row.areaServed);
-  setCell(ws, 3, rowNumber, row.manufacturer);
-  setCell(ws, 4, rowNumber, row.modelNumber);
-  setCell(ws, 5, rowNumber, Number(row.nominalTons));
-  setCell(ws, 6, rowNumber, row.unitType);
-  setCell(ws, 7, rowNumber, row.unitEer === '—' ? '' : row.unitEer);
-  setCell(ws, 8, rowNumber, row.seerIeerr === '—' ? '' : row.seerIeerr);
-  setCell(ws, 9, rowNumber, row.supplyCfm === '—' ? '' : Number(row.supplyCfm));
-  setCell(ws, 10, rowNumber, row.supplyEsp === '—' ? '' : row.supplyEsp);
-  setCell(ws, 11, rowNumber, row.supplyBhp === '—' ? '' : row.supplyBhp);
-  setCell(ws, 12, rowNumber, row.supplyHp === '—' ? '' : row.supplyHp);
-  setCell(ws, 13, rowNumber, row.supplyRpm === '—' ? '' : row.supplyRpm);
-  setCell(ws, 14, rowNumber, row.coolingEat === '—' ? '' : row.coolingEat);
-  setCell(ws, 15, rowNumber, row.coolingLat === '—' ? '' : row.coolingLat);
-  setCell(ws, 16, rowNumber, row.coolingSensible === '—' ? '' : row.coolingSensible);
-  setCell(ws, 17, rowNumber, row.coolingTotal === '—' ? '' : row.coolingTotal);
-  setCell(ws, 18, rowNumber, row.heatingEat === '—' ? '' : row.heatingEat);
-  setCell(ws, 19, rowNumber, row.heatingLat === '—' ? '' : row.heatingLat);
-  setCell(ws, 20, rowNumber, row.heatingTotalCapacity === '—' ? '' : row.heatingTotalCapacity);
-  setCell(ws, 21, rowNumber, row.heatingInput === 'No heat' ? '' : row.heatingInput);
-  setCell(ws, 22, rowNumber, row.voltPh);
-  setCell(ws, 23, rowNumber, row.mca === '—' ? '' : row.mca);
-  setCell(ws, 24, rowNumber, row.mocp === '—' ? '' : row.mocp);
-  setCell(ws, 25, rowNumber, row.filterType === '—' ? '' : row.filterType);
-  setCell(ws, 26, rowNumber, row.weight === '—' ? '' : Number(row.weight));
-  setCell(ws, 27, rowNumber, row.remarks === '—' ? '' : row.remarks);
+  setCell(ws, 2, rowNumber, row.tag);
+  setCell(ws, 3, rowNumber, row.areaServed === '—' ? '' : row.areaServed);
+  setCell(ws, 4, rowNumber, row.manufacturer);
+  setCell(ws, 5, rowNumber, row.modelNumber);
+  setCell(ws, 6, rowNumber, Number(row.nominalTons));
+  setCell(ws, 7, rowNumber, row.unitType);
+  setCell(ws, 8, rowNumber, row.unitEer === '—' ? '' : row.unitEer);
+  setCell(ws, 9, rowNumber, row.seerIeerr === '—' ? '' : row.seerIeerr);
+  setCell(ws, 10, rowNumber, row.supplyCfm === '—' ? '' : Number(row.supplyCfm));
+  setCell(ws, 11, rowNumber, row.supplyEsp === '—' ? '' : row.supplyEsp);
+  setCell(ws, 12, rowNumber, row.supplyBhp === '—' ? '' : row.supplyBhp);
+  setCell(ws, 13, rowNumber, row.supplyHp === '—' ? '' : row.supplyHp);
+  setCell(ws, 14, rowNumber, row.supplyRpm === '—' ? '' : row.supplyRpm);
+  setCell(ws, 15, rowNumber, row.coolingEat === '—' ? '' : row.coolingEat);
+  setCell(ws, 16, rowNumber, row.coolingLat === '—' ? '' : row.coolingLat);
+  setCell(ws, 17, rowNumber, row.coolingSensible === '—' ? '' : row.coolingSensible);
+  setCell(ws, 18, rowNumber, row.coolingTotal === '—' ? '' : row.coolingTotal);
+  setCell(ws, 19, rowNumber, row.heatingEat === '—' ? '' : row.heatingEat);
+  setCell(ws, 20, rowNumber, row.heatingLat === '—' ? '' : row.heatingLat);
+  setCell(ws, 21, rowNumber, row.heatingTotalCapacity === '—' ? '' : row.heatingTotalCapacity);
+  setCell(ws, 22, rowNumber, row.heatingInput === 'No heat' ? '' : row.heatingInput);
+  setCell(ws, 23, rowNumber, row.voltPh);
+  setCell(ws, 24, rowNumber, row.mca === '—' ? '' : row.mca);
+  setCell(ws, 25, rowNumber, row.mocp === '—' ? '' : row.mocp);
+  setCell(ws, 26, rowNumber, row.filterType === '—' ? '' : row.filterType);
+  setCell(ws, 27, rowNumber, row.weight === '—' ? '' : Number(row.weight));
+  setCell(ws, 28, rowNumber, row.remarks === '—' ? '' : row.remarks);
 }
 
 async function createWorkbook(env, units) {
@@ -371,7 +371,7 @@ async function createWorkbook(env, units) {
   const ws = wb.Sheets[sheetName];
   if (!ws) throw new Error('Template worksheet not found.');
 
-  const startRow = loaded.flavor === 'june' ? 3 : 4;
+  const startRow = loaded.flavor === 'june' ? 4 : 4;
   let currentRow = startRow;
 
   for (const unit of units) {
@@ -381,7 +381,7 @@ async function createWorkbook(env, units) {
   }
 
   const existingRange = XLSX.utils.decode_range(ws['!ref'] || 'A1');
-  updateSheetRange(ws, Math.max(existingRange.e.c + 1, 27), Math.max(existingRange.e.r + 1, currentRow));
+  updateSheetRange(ws, Math.max(existingRange.e.c + 1, 28), Math.max(existingRange.e.r + 1, currentRow));
   return XLSX.write(wb, { type: 'array', bookType: 'xlsx', cellStyles: true });
 }
 
